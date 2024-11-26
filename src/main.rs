@@ -21,7 +21,7 @@ impl GetCmd {
     async fn go(self) -> Result<()> {
         let domain_name = &self.domain_name;
         let address = Url::parse(&format!(
-            "wss://{domain_name}/com.atproto.label.subscribeLabels?cursor=0"
+            "wss://{domain_name}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
         ))?;
         if address.domain() != Some(domain_name) {
             bail!("invalid domain")
