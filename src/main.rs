@@ -1,6 +1,11 @@
 use anyhow::{bail, Result};
+use cbor4ii::core::Value;
+use cbor4ii::core::dec::{Decode, Read};
+use cbor4ii::core::utils::SliceReader;
 use clap::{Args, Parser};
+use futures_util::StreamExt;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
 #[derive(Debug, Parser)]
@@ -27,7 +32,29 @@ impl GetCmd {
             bail!("invalid domain")
         }
         let (stream, _response) = connect_async(&address).await?;
-        Ok(())
+        let (_write, mut read) = stream.split();
+        loop {
+            let Some(message) = read.next().await else {
+                continue;
+            };
+            match message? {
+                Message::Text(text) => {
+                    println!("text message: {text}")
+                }
+                Message::Binary(bin) => {
+                    let mut reader = SliceReader::new(&bin);
+                    let header = Value::decode(&mut reader)?;
+                    let body = Value::decode(&mut reader)?;
+                    let extra = if reader.fill(1)?.as_ref().is_empty() {
+                        ""
+                    } else {
+                        ", EXTRA DATA!"
+                    };
+                    println!("bin message: {header:?}, {body:?}{extra}");
+                }
+                _ => {}
+            }
+        }
     }
 }
 

@@ -5,9 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.93"
-atrium-api = "0.24.8"
+cbor4ii = { version = "0.3.3", features = ["use_std"] }
 clap = { version = "*", features = ["derive"] }
-rustls = "0.23.18"
+futures-util = "0.3.31"
+rustls = "0.23.18" # default features
 tokio = { version = "1.41.1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros"] }
 tokio-tungstenite = { version = "0.24.0", features = ["connect", "rustls-tls-native-roots", "url"] }
 url = "2.5.4"
