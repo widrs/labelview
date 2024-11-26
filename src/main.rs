@@ -1,15 +1,12 @@
-use anyhow::{anyhow, bail, Result};
-use clap::{Args, Parser, Subcommand};
+use anyhow::{bail, Result};
+use clap::{Args, Parser};
+use tokio_tungstenite::connect_async;
+use url::Url;
 
 #[derive(Debug, Parser)]
 #[command(version)]
-struct LabelView {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Debug, Subcommand)]
 enum Command {
+    /// Reads the labels from a labeler service
     Get(GetCmd),
 }
 
@@ -20,13 +17,23 @@ struct GetCmd {
     domain_name: String,
 }
 
+impl GetCmd {
+    async fn go(self) -> Result<()> {
+        let domain_name = &self.domain_name;
+        let address = Url::parse(&format!(
+            "wss://{domain_name}/com.atproto.label.subscribeLabels?cursor=0"
+        ))?;
+        if address.domain() != Some(domain_name) {
+            bail!("invalid domain")
+        }
+        let (stream, _response) = connect_async(&address).await?;
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    match LabelView::parse().command {
-        Command::Get(get_cmd) => {
-            let domain = get_cmd.domain_name.as_str();
-            println!("get {domain}");
-        }
+    match Command::parse() {
+        Command::Get(get_cmd) => get_cmd.go().await,
     }
-    Ok(())
 }
