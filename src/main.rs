@@ -24,6 +24,7 @@ struct GetCmd {
 
 impl GetCmd {
     async fn go(self) -> Result<()> {
+        // TODO(widders): get the service domain from the did service record
         let domain_name = &self.domain_name;
         let address = Url::parse(&format!(
             "wss://{domain_name}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
