@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
     Connection,
 };
 
@@ -20,7 +20,8 @@ pub async fn get_database() -> Result<sqlx::SqliteConnection> {
         &SqliteConnectOptions::new()
             .filename(data_dir.join("data.sqlite"))
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal),
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal),
     )
     .await?)
 }
