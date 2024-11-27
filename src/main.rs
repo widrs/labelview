@@ -1,8 +1,8 @@
 use anyhow::{bail, Result};
-use cbor4ii::core::Value;
 use cbor4ii::core::dec::{Decode, Read};
 use cbor4ii::core::utils::SliceReader;
-use clap::{Args, Parser};
+use cbor4ii::core::Value;
+use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -11,8 +11,25 @@ use url::Url;
 #[derive(Debug, Parser)]
 #[command(version)]
 enum Command {
+    /// Actions for the data directory
+    #[clap(subcommand)]
+    Data(ConfigCmd),
     /// Reads the labels from a labeler service
     Get(GetCmd),
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCmd {
+    /// Shows the location of the data directory
+    Where,
+}
+
+impl ConfigCmd {
+    async fn go(self) -> Result<()> {
+        let data_dir = labelview::get_data_dir()?;
+        println!("{data_dir:?}");
+        Ok(())
+    }
 }
 
 #[derive(Debug, Args)]
@@ -62,6 +79,7 @@ impl GetCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Command::parse() {
-        Command::Get(get_cmd) => get_cmd.go().await,
+        Command::Data(cmd) => cmd.go().await,
+        Command::Get(cmd) => cmd.go().await,
     }
 }
