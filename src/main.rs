@@ -35,8 +35,8 @@ impl ConfigCmd {
                 Ok(())
             }
             ConfigCmd::Connect => {
-                let db = labelview::connect()?;
-                println!("connected");
+                labelview::connect()?;
+                println!("ok");
                 Ok(())
             }
         }
