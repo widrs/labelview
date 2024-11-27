@@ -26,9 +26,13 @@ enum ConfigCmd {
 
 impl ConfigCmd {
     async fn go(self) -> Result<()> {
-        let data_dir = labelview::get_data_dir()?;
-        println!("{data_dir:?}");
-        Ok(())
+        match self {
+            ConfigCmd::Where => {
+                let data_dir = labelview::get_data_dir()?.display().to_string();
+                println!("{data_dir}");
+                Ok(())
+            }
+        }
     }
 }
 
