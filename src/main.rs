@@ -22,6 +22,8 @@ enum Command {
 enum ConfigCmd {
     /// Shows the location of the data directory
     Where,
+    /// Try to open the database file
+    Connect,
 }
 
 impl ConfigCmd {
@@ -30,6 +32,11 @@ impl ConfigCmd {
             ConfigCmd::Where => {
                 let data_dir = labelview::get_data_dir()?.display().to_string();
                 println!("{data_dir}");
+                Ok(())
+            }
+            ConfigCmd::Connect => {
+                let db = labelview::connect()?;
+                println!("connected");
                 Ok(())
             }
         }

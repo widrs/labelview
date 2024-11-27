@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
-    Connection,
-};
+use rusqlite::Connection;
+
+mod embedded {
+    refinery::embed_migrations!("migrations");
+}
 
 pub fn get_data_dir() -> Result<PathBuf> {
     directories::ProjectDirs::from("", "", "labelview")
@@ -12,16 +13,20 @@ pub fn get_data_dir() -> Result<PathBuf> {
         .ok_or(anyhow!("could not find data directory"))
 }
 
-pub async fn get_database() -> Result<sqlx::SqliteConnection> {
+pub fn connect() -> Result<Connection> {
     let data_dir = get_data_dir()?;
     std::fs::create_dir_all(&data_dir)
         .map_err(|err| anyhow!("couldn't create data directory {data_dir:?}: {err}"))?;
-    Ok(sqlx::SqliteConnection::connect_with(
-        &SqliteConnectOptions::new()
-            .filename(data_dir.join("data.sqlite"))
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal),
-    )
-    .await?)
+    let mut db = Connection::open_with_flags(
+        data_dir.join("data.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE,
+    )?;
+    db.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY,
+        true,
+    )?;
+    db.pragma_update(None, "journal_mode", "WAL")?;
+    db.pragma_update(None, "synchronous", "NORMAL")?;
+    embedded::migrations::runner().run(&mut db)?;
+    Ok(db)
 }
