@@ -1,11 +1,12 @@
-use anyhow::{bail, Result};
-use cbor4ii::core::dec::{Decode, Read};
-use cbor4ii::core::utils::SliceReader;
-use cbor4ii::core::Value;
+use anyhow::{anyhow, bail, Result};
+use cbor4ii::core::{
+    dec::{Decode, Read},
+    utils::SliceReader,
+    Value,
+};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
 #[derive(Debug, Parser)]
@@ -51,6 +52,50 @@ struct GetCmd {
 }
 
 impl GetCmd {
+    /// Reads an event stream frame header type
+    ///
+    /// https://atproto.com/specs/event-stream#streaming-wire-protocol-v0
+    fn header_type(bin: &mut SliceReader) -> Result<String> {
+        let mut bailing = false;
+        let mut error_kind = None;
+        let mut error_msg = None;
+        let mut header_ty = None;
+        match Value::decode(bin)? {
+            Value::Map(items) => {
+                for item in items {
+                    match item {
+                        (Value::Text(k), v) if k == "op" => {
+                            if let Value::Integer(i) = v {
+                                if i != 1 {
+                                    bailing = true;
+                                }
+                            } else {
+                                bail!("malformed event stream header op key");
+                            }
+                        }
+                        (Value::Text(k), Value::Text(ty)) if k == "t" => {
+                            header_ty = Some(ty);
+                        }
+                        (Value::Text(k), Value::Text(err)) if k == "error" => {
+                            error_kind = Some(err);
+                        }
+                        (Value::Text(k), Value::Text(msg)) if k == "message" => {
+                            error_msg = Some(msg);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => bail!("found a non-map value in place of the event stream header"),
+        }
+        if bailing {
+            let error_1 = error_kind.as_deref().unwrap_or("(no error type)");
+            let error_2 = error_msg.as_deref().unwrap_or("(no error message)");
+            bail!("received an error from event stream: {error_1}: {error_2}");
+        }
+        header_ty.ok_or(anyhow!("missing type in event stream header"))
+    }
+
     async fn go(self) -> Result<()> {
         // TODO(widders): get the service domain from the did service record
         let domain_name = &self.domain_name;
@@ -72,14 +117,14 @@ impl GetCmd {
                 }
                 Message::Binary(bin) => {
                     let mut reader = SliceReader::new(&bin);
-                    let header = Value::decode(&mut reader)?;
+                    let ty = Self::header_type(&mut reader)?;
                     let body = Value::decode(&mut reader)?;
                     let extra = if reader.fill(1)?.as_ref().is_empty() {
                         ""
                     } else {
                         ", EXTRA DATA!"
                     };
-                    println!("bin message: {header:?}, {body:?}{extra}");
+                    println!("bin message with type {ty:?}: {body:?}{extra}");
                 }
                 _ => {}
             }
