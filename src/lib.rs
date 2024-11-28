@@ -91,25 +91,41 @@ impl LabelRecord {
         let mut val = None;
         let mut sig = None;
 
+        macro_rules! read_keys {
+            ($item:ident, $(($key:literal, $ty:ident, $dest:ident),)*) => {
+                let (Value::Text(ref __k), __v) = $item else {
+                    bail!("non-string key in label record");
+                };
+                match (__k.as_str(), __v) {
+                    $(
+                        ($key , Value::$ty(__v)) => {
+                            if $dest.is_some() {
+                                bail!("duplicate label record key {:?}", $key);
+                            }
+                            $dest = Some(__v);
+                        }
+                    )*
+                    _ => bail!("unexpected item in label record"),
+                }
+            }
+        }
+
         let Value::Map(items) = cbor_val else {
             bail!("label record item is not a cbor map");
         };
         for item in items {
-            let (Value::Text(ref k), v) = item else {
-                bail!("non-string key in label record");
-            };
-            match (k.as_str(), v) {
-                ("ver", Value::Integer(v)) => ver = Some(v),
-                ("src", Value::Text(v)) => src = Some(v),
-                ("uri", Value::Text(v)) => target_uri = Some(v),
-                ("cid", Value::Text(v)) => target_cid = Some(v),
-                ("val", Value::Text(v)) => val = Some(v),
-                ("neg", Value::Bool(v)) => neg = Some(v),
-                ("cts", Value::Text(v)) => create_timestamp = Some(v),
-                ("exp", Value::Text(v)) => expiry_timestamp = Some(v),
-                ("sig", Value::Bytes(v)) => sig = Some(v),
-                _ => bail!("unexpected item in label record"),
-            }
+            read_keys!(
+                item,
+                ("ver", Integer, ver),
+                ("src", Text, src),
+                ("uri", Text, target_uri),
+                ("cid", Text, target_cid),
+                ("val", Text, val),
+                ("neg", Bool, neg),
+                ("cts", Text, create_timestamp),
+                ("exp", Text, expiry_timestamp),
+                ("sig", Bytes, sig),
+            );
         }
 
         if ver != Some(1) {
