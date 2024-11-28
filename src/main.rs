@@ -18,6 +18,7 @@ enum Command {
     Data(ConfigCmd),
     /// Reads the labels from a labeler service
     Get(GetCmd),
+    // TODO(widders): summarize commands
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,6 +58,7 @@ impl GetCmd {
     ///
     /// https://atproto.com/specs/event-stream#streaming-wire-protocol-v0
     fn header_type(bin: &mut SliceReader) -> Result<String> {
+        // TODO(widders): maybe move this into the lib
         let mut bailing = false;
         let mut error_kind = None;
         let mut error_msg = None;
@@ -101,6 +103,7 @@ impl GetCmd {
         let mut db = labelview::connect()?;
         // TODO(widders): get the service domain from the did service record
         let domain_name = &self.domain_name;
+        // TODO(widders): catch-up or re-tread data we already have to look for changes
         let address = Url::parse(&format!(
             "wss://{domain_name}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
         ))?;
@@ -109,6 +112,7 @@ impl GetCmd {
         }
         let (stream, _response) = connect_async(&address).await?;
         let (_write, mut read) = stream.split();
+        // TODO(widders): progress bar?
         loop {
             let Some(message) = read.next().await else {
                 continue;
