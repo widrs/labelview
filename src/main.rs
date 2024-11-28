@@ -6,6 +6,7 @@ use cbor4ii::core::{
 };
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
+use labelview::{get_data_dir, LabelRecord};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
@@ -31,7 +32,7 @@ impl ConfigCmd {
     async fn go(self) -> Result<()> {
         match self {
             ConfigCmd::Where => {
-                let data_dir = labelview::get_data_dir()?.display().to_string();
+                let data_dir = get_data_dir()?.display().to_string();
                 println!("{data_dir}");
                 Ok(())
             }
@@ -60,7 +61,7 @@ impl GetCmd {
         let mut error_kind = None;
         let mut error_msg = None;
         let mut header_ty = None;
-        match Value::decode(bin)? {
+        match Value::decode(bin).map_err(|e| anyhow!("error decoding event stream header: {e}"))? {
             Value::Map(items) => {
                 for item in items {
                     match item {
@@ -97,6 +98,7 @@ impl GetCmd {
     }
 
     async fn go(self) -> Result<()> {
+        let mut db = labelview::connect()?;
         // TODO(widders): get the service domain from the did service record
         let domain_name = &self.domain_name;
         let address = Url::parse(&format!(
@@ -111,23 +113,35 @@ impl GetCmd {
             let Some(message) = read.next().await else {
                 continue;
             };
-            match message? {
+            match message.map_err(|e| anyhow!("error reading websocket message: {e}"))? {
                 Message::Text(text) => {
                     println!("text message: {text}")
                 }
                 Message::Binary(bin) => {
                     let mut reader = SliceReader::new(&bin);
+                    // the schema for this endpoint is declared here:
+                    // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
                     let ty = Self::header_type(&mut reader)?;
-                    let body = Value::decode(&mut reader)?;
-                    let extra = if reader.fill(1)?.as_ref().is_empty() {
-                        ""
+                    if ty == "#labels" {
+                        let labels = LabelRecord::from_subscription_record(&mut reader)?;
+                        for label in labels {
+                            label
+                                .save(&mut db)
+                                .map_err(|e| anyhow!("error saving label record: {e}"))?;
+                        }
                     } else {
-                        ", EXTRA DATA!"
-                    };
-                    println!("bin message with type {ty:?}: {body:?}{extra}");
+                        let body = Value::decode(&mut reader)?;
+                        let extra = if reader.fill(1)?.as_ref().is_empty() {
+                            ""
+                        } else {
+                            ", EXTRA DATA!"
+                        };
+                        println!("bin message with type {ty:?}: {body:?}{extra}");
+                    }
                 }
                 _ => {}
             }
+            // TODO(widders): timeout when stream catches up and crawls
         }
     }
 }

@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
-use cbor4ii::core::{
-    dec::{Decode, Read},
-    utils::SliceReader,
-    Value,
-};
+use cbor4ii::core::{dec::Decode, utils::SliceReader, Value};
 use rusqlite::{params, Connection};
 
 mod embedded {
@@ -27,9 +23,13 @@ pub fn connect() -> Result<Connection> {
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY,
         true,
     )?;
-    db.pragma_update(None, "journal_mode", "WAL")?;
-    db.pragma_update(None, "synchronous", "NORMAL")?;
-    embedded::migrations::runner().run(&mut db)?;
+    db.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| anyhow!("error setting up db connection: {e}"))?;
+    db.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|e| anyhow!("error setting up db connection: {e}"))?;
+    embedded::migrations::runner()
+        .run(&mut db)
+        .map_err(|e| anyhow!("error running db migrations: {e}"))?;
     Ok(db)
 }
 
@@ -49,7 +49,8 @@ pub struct LabelRecord {
 impl LabelRecord {
     /// https://atproto.com/specs/label#schema-and-data-model
     pub fn from_subscription_record(bin: &mut SliceReader) -> Result<Vec<Self>> {
-        let body = Value::decode(bin)?;
+        let body = Value::decode(bin)
+            .map_err(|e| anyhow!("error decoding label record event stream body: {e}"))?;
         let mut record_seq = None;
         let mut record_labels = None;
         match body {
@@ -57,15 +58,14 @@ impl LabelRecord {
                 for item in items {
                     match item {
                         (Value::Text(k), Value::Integer(seq)) if k == "seq" => {
-                            record_seq = Some(
-                                i64::try_from(seq)
-                                    .map_err(|e| anyhow!("sequence number too large"))?,
-                            )
+                            record_seq = Some(i64::try_from(seq).map_err(|_| {
+                                anyhow!("subscription record sequence number too large")
+                            })?)
                         }
                         (Value::Text(k), Value::Array(labels)) if k == "labels" => {
                             record_labels = Some(labels)
                         }
-                        _ => bail!("unrecognized map entry"),
+                        _ => bail!("subscription record has unrecognized map entry"),
                     }
                 }
             }
@@ -153,18 +153,26 @@ impl LabelRecord {
     }
 
     pub fn save(&self, db: &mut Connection) -> Result<()> {
-        let mut stmt = db.prepare_cached(r#"
+        let mut stmt = db.prepare_cached(
+            r#"
             INSERT INTO label_records(
                 src, seq, create_timestamp,
                 expiry_timestamp, neg, target_uri,
                 target_cid, val, sig
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
-        "#)?;
+        "#,
+        )?;
         stmt.execute(params!(
-            &self.src, &self.seq, &self.create_timestamp,
-            &self.expiry_timestamp, &self.neg, &self.target_uri,
-            &self.target_cid, &self.val, &self.sig
+            &self.src,
+            &self.seq,
+            &self.create_timestamp,
+            &self.expiry_timestamp,
+            &self.neg,
+            &self.target_uri,
+            &self.target_cid,
+            &self.val,
+            &self.sig
         ))?;
         Ok(())
     }
