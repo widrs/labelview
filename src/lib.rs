@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
-use cbor4ii::core::{dec::Decode, utils::SliceReader, Value};
 use rusqlite::{params, Connection};
 
 mod embedded {
@@ -48,105 +47,32 @@ pub struct LabelRecord {
 
 impl LabelRecord {
     /// https://atproto.com/specs/label#schema-and-data-model
-    pub fn from_subscription_record(bin: &mut SliceReader) -> Result<Vec<Self>> {
-        let body = Value::decode(bin)
-            .map_err(|e| anyhow!("error decoding label record event stream body: {e}"))?;
-        let mut record_seq = None;
-        let mut record_labels = None;
-        let Value::Map(items) = body else {
-            bail!("subscription record is not a cbor map");
-        };
-        for item in items {
-            let (Value::Text(ref k), v) = item else {
-                bail!("non-string key in label record");
-            };
-            match (k.as_str(), v) {
-                ("seq", Value::Integer(seq)) => {
-                    record_seq =
-                        Some(i64::try_from(seq).map_err(|_| {
-                            anyhow!("subscription record sequence number too large")
-                        })?)
-                }
-                ("labels", Value::Array(labels)) => record_labels = Some(labels),
-                _ => bail!("subscription record has unrecognized map entry"),
+    pub fn from_subscription_record(bin: &mut &[u8]) -> Result<Vec<Self>> {
+        let labels: atrium_api::com::atproto::label::subscribe_labels::Labels =
+            ciborium::from_reader(bin)
+                .map_err(|e| anyhow!("error decoding label record event stream body: {e}"))?;
+        let seq = labels.seq;
+        if !(1..i64::MAX).contains(&seq) {
+            bail!("non-positive sequence number in label update: {seq}");
+        }
+        labels.data.labels.into_iter().map(|label| {
+            let label = label.data;
+            if label.ver != Some(1) {
+                let ver = label.ver;
+                bail!("unsupported or missing label record version {ver:?}");
             }
-        }
-        let (Some(seq), Some(labels)) = (record_seq, record_labels) else {
-            bail!("incomplete subscription record is missing required key(s)");
-        };
-        labels
-            .into_iter()
-            .map(|val| Self::from_cbor(seq, val))
-            .collect()
-    }
-
-    fn from_cbor(seq: i64, cbor_val: Value) -> Result<Self> {
-        let mut ver = None;
-        let mut src = None;
-        let mut create_timestamp = None;
-        let mut expiry_timestamp = None;
-        let mut neg = None;
-        let mut target_uri = None;
-        let mut target_cid = None;
-        let mut val = None;
-        let mut sig = None;
-
-        macro_rules! read_keys {
-            ($item:ident, $(($key:literal, $ty:ident, $dest:ident),)*) => {
-                let (Value::Text(ref __k), __v) = $item else {
-                    bail!("non-string key in label record");
-                };
-                match (__k.as_str(), __v) {
-                    $(
-                        ($key , Value::$ty(__v)) => {
-                            if $dest.is_some() {
-                                bail!("duplicate label record key {:?}", $key);
-                            }
-                            $dest = Some(__v);
-                        }
-                    )*
-                    _ => bail!("unexpected item in label record"),
-                }
-            }
-        }
-
-        let Value::Map(items) = cbor_val else {
-            bail!("label record item is not a cbor map");
-        };
-        for item in items {
-            read_keys!(
-                item,
-                ("ver", Integer, ver),
-                ("src", Text, src),
-                ("uri", Text, target_uri),
-                ("cid", Text, target_cid),
-                ("val", Text, val),
-                ("neg", Bool, neg),
-                ("cts", Text, create_timestamp),
-                ("exp", Text, expiry_timestamp),
-                ("sig", Bytes, sig),
-            );
-        }
-
-        if ver != Some(1) {
-            bail!("unsupported or missing label schema version: {ver:?}");
-        }
-        let (Some(src), Some(target_uri), Some(val), Some(create_timestamp)) =
-            (src, target_uri, val, create_timestamp)
-        else {
-            bail!("label record item has missing required fields");
-        };
-        Ok(LabelRecord {
-            src,
-            seq,
-            create_timestamp,
-            expiry_timestamp,
-            neg: neg.unwrap_or(false),
-            target_uri,
-            target_cid,
-            val,
-            sig,
-        })
+            Ok(Self{
+                src: label.src.to_string(),
+                seq,
+                create_timestamp: label.cts.as_str().to_owned(),
+                expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
+                neg: label.neg.unwrap_or(false),
+                target_uri: label.uri,
+                target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
+                val: label.val,
+                sig: label.sig,
+            })
+        }).collect()
     }
 
     pub fn save(&self, db: &mut Connection) -> Result<()> {

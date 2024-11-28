@@ -123,8 +123,12 @@ impl GetCmd {
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
                     let ty = Self::header_type(&mut reader)?;
+                    // Get the rest of the bytes from the slice reader
+                    // TODO(widders): just use ciborium serde to get the header probably idk
+                    let body_read = reader.fill(usize::MAX).expect("slice read failure");
+                    let mut body_bytes = body_read.as_ref();
                     if ty == "#labels" {
-                        let labels = LabelRecord::from_subscription_record(&mut reader)?;
+                        let labels = LabelRecord::from_subscription_record(&mut body_bytes)?;
                         for label in labels {
                             label
                                 .save(&mut db)
