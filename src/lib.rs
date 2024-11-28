@@ -53,24 +53,22 @@ impl LabelRecord {
             .map_err(|e| anyhow!("error decoding label record event stream body: {e}"))?;
         let mut record_seq = None;
         let mut record_labels = None;
-        match body {
-            Value::Map(items) => {
-                for item in items {
-                    match item {
-                        (Value::Text(k), Value::Integer(seq)) if k == "seq" => {
-                            record_seq = Some(i64::try_from(seq).map_err(|_| {
-                                anyhow!("subscription record sequence number too large")
-                            })?)
-                        }
-                        (Value::Text(k), Value::Array(labels)) if k == "labels" => {
-                            record_labels = Some(labels)
-                        }
-                        _ => bail!("subscription record has unrecognized map entry"),
-                    }
+        let Value::Map(items) = body else {
+            bail!("subscription record is not a cbor map");
+        };
+        for item in items {
+            let (Value::Text(ref k), v) = item else {
+                bail!("non-string key in label record");
+            };
+            match (k.as_str(), v) {
+                ("seq", Value::Integer(seq)) => {
+                    record_seq =
+                        Some(i64::try_from(seq).map_err(|_| {
+                            anyhow!("subscription record sequence number too large")
+                        })?)
                 }
-            }
-            _ => {
-                bail!("subscription record is not a cbor map");
+                ("labels", Value::Array(labels)) => record_labels = Some(labels),
+                _ => bail!("subscription record has unrecognized map entry"),
             }
         }
         let (Some(seq), Some(labels)) = (record_seq, record_labels) else {
@@ -97,37 +95,20 @@ impl LabelRecord {
             bail!("label record item is not a cbor map");
         };
         for item in items {
-            match item {
-                (Value::Text(k), Value::Integer(v)) if k == "ver" => {
-                    ver = Some(v);
-                }
-                (Value::Text(k), Value::Text(v)) if k == "src" => {
-                    src = Some(v);
-                }
-                (Value::Text(k), Value::Text(v)) if k == "uri" => {
-                    target_uri = Some(v);
-                }
-                (Value::Text(k), Value::Text(v)) if k == "cid" => {
-                    target_cid = Some(v);
-                }
-                (Value::Text(k), Value::Text(v)) if k == "val" => {
-                    val = Some(v);
-                }
-                (Value::Text(k), Value::Bool(v)) if k == "neg" => {
-                    neg = Some(v);
-                }
-                (Value::Text(k), Value::Text(v)) if k == "cts" => {
-                    create_timestamp = Some(v);
-                }
-                (Value::Text(k), Value::Text(v)) if k == "exp" => {
-                    expiry_timestamp = Some(v);
-                }
-                (Value::Text(k), Value::Bytes(v)) if k == "sig" => {
-                    sig = Some(v);
-                }
-                _ => {
-                    bail!("unexpected item in label record");
-                }
+            let (Value::Text(ref k), v) = item else {
+                bail!("non-string key in label record");
+            };
+            match (k.as_str(), v) {
+                ("ver", Value::Integer(v)) => ver = Some(v),
+                ("src", Value::Text(v)) => src = Some(v),
+                ("uri", Value::Text(v)) => target_uri = Some(v),
+                ("cid", Value::Text(v)) => target_cid = Some(v),
+                ("val", Value::Text(v)) => val = Some(v),
+                ("neg", Value::Bool(v)) => neg = Some(v),
+                ("cts", Value::Text(v)) => create_timestamp = Some(v),
+                ("exp", Value::Text(v)) => expiry_timestamp = Some(v),
+                ("sig", Value::Bytes(v)) => sig = Some(v),
+                _ => bail!("unexpected item in label record"),
             }
         }
 

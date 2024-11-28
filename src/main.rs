@@ -66,8 +66,11 @@ impl GetCmd {
         match Value::decode(bin).map_err(|e| anyhow!("error decoding event stream header: {e}"))? {
             Value::Map(items) => {
                 for item in items {
-                    match item {
-                        (Value::Text(k), v) if k == "op" => {
+                    let (Value::Text(ref k), v) = item else {
+                        bail!("non-string key in event stream header");
+                    };
+                    match (k.as_str(), v) {
+                        ("op", v) => {
                             if let Value::Integer(i) = v {
                                 if i != 1 {
                                     bailing = true;
@@ -76,15 +79,9 @@ impl GetCmd {
                                 bail!("malformed event stream header op key");
                             }
                         }
-                        (Value::Text(k), Value::Text(ty)) if k == "t" => {
-                            header_ty = Some(ty);
-                        }
-                        (Value::Text(k), Value::Text(err)) if k == "error" => {
-                            error_kind = Some(err);
-                        }
-                        (Value::Text(k), Value::Text(msg)) if k == "message" => {
-                            error_msg = Some(msg);
-                        }
+                        ("t", Value::Text(ty)) => header_ty = Some(ty),
+                        ("error", Value::Text(err)) => error_kind = Some(err),
+                        ("message", Value::Text(msg)) => error_msg = Some(msg),
                         _ => {}
                     }
                 }
