@@ -7,7 +7,6 @@ resolver = "2"
 [dependencies]
 anyhow = "1.0.93"
 atrium-api = "0.24.8"
-cbor4ii = { version = "0.3.3", features = ["use_std"] }
 ciborium = "0.2.2"
 clap = { version = "4.5.21", features = ["derive"] }
 directories = "5.0.1"
@@ -16,7 +15,7 @@ libsqlite3-sys = { version = "0.28.0", features = ["bundled"] } # TODO(widders):
 refinery = { version = "0.8.14", features = ["rusqlite"] }
 rusqlite = { version = "0.31.0", features = ["modern_sqlite", "rusqlite-macros"] }
 rustls = "0.23.18" # default features
-# serde = { version = "1.0.215", features = ["derive"] }
+serde = { version = "1.0.215", features = ["derive"] }
 tokio = { version = "1.41.1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros"] }
 tokio-tungstenite = { version = "0.24.0", features = ["connect", "rustls-tls-native-roots", "url"] }
 url = "2.5.4"

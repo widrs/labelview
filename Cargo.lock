@@ -263,15 +263,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ac0150caa2ae65ca5bd83f25c7de183dea78d4d366469f148435e2acfbad0da"
 
 [[package]]
-name = "cbor4ii"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "472931dd4dfcc785075b09be910147f9c6258883fc4591d0dac6116392b2daa6"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "cc"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -990,7 +981,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atrium-api",
- "cbor4ii",
  "ciborium",
  "clap",
  "directories",
@@ -999,6 +989,7 @@ dependencies = [
  "refinery",
  "rusqlite",
  "rustls",
+ "serde",
  "tokio",
  "tokio-tungstenite",
  "url",

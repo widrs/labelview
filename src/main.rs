@@ -1,12 +1,8 @@
 use anyhow::{anyhow, bail, Result};
-use cbor4ii::core::{
-    dec::{Decode, Read},
-    utils::SliceReader,
-    Value,
-};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use labelview::{get_data_dir, LabelRecord};
+use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
@@ -57,43 +53,22 @@ impl GetCmd {
     /// Reads an event stream frame header type
     ///
     /// https://atproto.com/specs/event-stream#streaming-wire-protocol-v0
-    fn header_type(bin: &mut SliceReader) -> Result<String> {
-        // TODO(widders): maybe move this into the lib
-        let mut bailing = false;
-        let mut error_kind = None;
-        let mut error_msg = None;
-        let mut header_ty = None;
-        match Value::decode(bin).map_err(|e| anyhow!("error decoding event stream header: {e}"))? {
-            Value::Map(items) => {
-                for item in items {
-                    let (Value::Text(ref k), v) = item else {
-                        bail!("non-string key in event stream header");
-                    };
-                    match (k.as_str(), v) {
-                        ("op", v) => {
-                            if let Value::Integer(i) = v {
-                                if i != 1 {
-                                    bailing = true;
-                                }
-                            } else {
-                                bail!("malformed event stream header op key");
-                            }
-                        }
-                        ("t", Value::Text(ty)) => header_ty = Some(ty),
-                        ("error", Value::Text(err)) => error_kind = Some(err),
-                        ("message", Value::Text(msg)) => error_msg = Some(msg),
-                        _ => {}
-                    }
-                }
-            }
-            _ => bail!("found a non-map value in place of the event stream header"),
+    fn header_type(bin: &mut &[u8]) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Header {
+            op: i64,
+            t: String,
+            error: Option<String>,
+            message: Option<String>,
         }
-        if bailing {
-            let error_1 = error_kind.as_deref().unwrap_or("(no error type)");
-            let error_2 = error_msg.as_deref().unwrap_or("(no error message)");
+        let header: Header = ciborium::from_reader(bin)
+            .map_err(|e| anyhow!("error decoding event stream header: {e}"))?;
+        if header.op != 1 {
+            let error_1 = header.error.as_deref().unwrap_or("(no error type)");
+            let error_2 = header.message.as_deref().unwrap_or("(no error message)");
             bail!("received an error from event stream: {error_1}: {error_2}");
         }
-        header_ty.ok_or(anyhow!("missing type in event stream header"))
+        Ok(header.t)
     }
 
     async fn go(self) -> Result<()> {
@@ -116,33 +91,36 @@ impl GetCmd {
             };
             match message.map_err(|e| anyhow!("error reading websocket message: {e}"))? {
                 Message::Text(text) => {
-                    println!("text message: {text}")
+                    println!("text message: {text:?}")
                 }
                 Message::Binary(bin) => {
-                    let mut reader = SliceReader::new(&bin);
+                    let mut bin = bin.as_slice();
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
-                    let ty = Self::header_type(&mut reader)?;
-                    // Get the rest of the bytes from the slice reader
-                    // TODO(widders): just use ciborium serde to get the header probably idk
-                    let body_read = reader.fill(usize::MAX).expect("slice read failure");
-                    let mut body_bytes = body_read.as_ref();
+                    let ty = Self::header_type(&mut bin)?;
                     if ty == "#labels" {
-                        let labels = LabelRecord::from_subscription_record(&mut body_bytes)?;
+                        let labels = LabelRecord::from_subscription_record(&mut bin)?;
                         for label in labels {
                             label
                                 .save(&mut db)
                                 .map_err(|e| anyhow!("error saving label record: {e}"))?;
                         }
+                    } else if ty == "#info" {
+                        let info: atrium_api::com::atproto::label::subscribe_labels::Info =
+                            ciborium::from_reader(&mut bin)
+                                .map_err(|e| anyhow!("error parsing #info message: {e}"))?;
+                        let name = &info.name;
+                        let message = &info.message;
+                        println!("info: {name:?}: {message:?}");
                     } else {
-                        let body = Value::decode(&mut reader)?;
-                        let extra = if reader.fill(1)?.as_ref().is_empty() {
-                            ""
-                        } else {
-                            ", EXTRA DATA!"
-                        };
-                        println!("bin message with type {ty:?}: {body:?}{extra}");
+                        bail!("unknown event stream message type: {ty:?}");
                     }
+                    if !bin.is_empty() {
+                        let extra_bytes = bin.len();
+                        println!(
+                            "EXTRA DATA: received {extra_bytes} at end of event stream message"
+                        );
+                    };
                 }
                 _ => {}
             }
