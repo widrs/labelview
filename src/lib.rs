@@ -6,7 +6,7 @@ use cbor4ii::core::{
     utils::SliceReader,
     Value,
 };
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 mod embedded {
     refinery::embed_migrations!("migrations");
@@ -150,5 +150,22 @@ impl LabelRecord {
             val,
             sig,
         })
+    }
+
+    pub fn save(&self, db: &mut Connection) -> Result<()> {
+        let mut stmt = db.prepare_cached(r#"
+            INSERT INTO label_records(
+                src, seq, create_timestamp,
+                expiry_timestamp, neg, target_uri,
+                target_cid, val, sig
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
+        "#)?;
+        stmt.execute(params!(
+            &self.src, &self.seq, &self.create_timestamp,
+            &self.expiry_timestamp, &self.neg, &self.target_uri,
+            &self.target_cid, &self.val, &self.sig
+        ))?;
+        Ok(())
     }
 }
