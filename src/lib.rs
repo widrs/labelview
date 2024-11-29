@@ -34,15 +34,15 @@ pub fn connect() -> Result<Connection> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LabelRecord {
-    src: String,
-    seq: i64,
-    create_timestamp: String,
-    expiry_timestamp: Option<String>,
-    neg: bool,
-    target_uri: String,
-    target_cid: Option<String>,
-    val: String,
-    sig: Option<Vec<u8>>,
+    pub src: String,
+    pub seq: i64,
+    pub create_timestamp: String,
+    pub expiry_timestamp: Option<String>,
+    pub neg: bool,
+    pub target_uri: String,
+    pub target_cid: Option<String>,
+    pub val: String,
+    pub sig: Option<Vec<u8>>,
 }
 
 impl LabelRecord {

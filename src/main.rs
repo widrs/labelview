@@ -3,6 +3,11 @@ use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use labelview::{get_data_dir, LabelRecord};
 use serde::Deserialize;
+use std::{
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    time::Duration,
+};
+use tokio::{select, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
@@ -154,8 +159,10 @@ impl GetCmd {
             bail!("labeler endpoint url does not seem to specify a domain");
         };
 
+        let mut label_counts = LabelCounts::new();
+
         println!();
-        println!("connecting to labeler service");
+        println!("streaming from labeler service");
         // TODO(widders): catch-up or re-tread data we already have to look for changes
         let address = Url::parse(&format!(
             "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
@@ -164,9 +171,25 @@ impl GetCmd {
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
         loop {
-            let Some(message) = read.next().await else {
-                continue;
-            };
+            // TODO(widders): customizable timeout
+            let timeout = sleep(Duration::from_millis(5000));
+            let next_frame_read = read.next();
+            let message;
+            select! {
+                _ = timeout => {
+                    println!("label subscription stream slowed and crawled; terminating");
+                    println!();
+                    label_counts.print_summary();
+                    return Ok(());
+                }
+                websocket_frame = next_frame_read => {
+                    let Some(msg) = websocket_frame else {
+                        continue;
+                    };
+                    message = msg;
+                }
+            }
+
             match message.map_err(|e| anyhow!("error reading websocket message: {e}"))? {
                 Message::Text(text) => {
                     println!("text message: {text:?}")
@@ -182,6 +205,9 @@ impl GetCmd {
                             label
                                 .save(&mut db)
                                 .map_err(|e| anyhow!("error saving label record: {e}"))?;
+
+                            // Add the label to our running tally as well
+                            label_counts.add_label(label);
                         }
                     } else if ty == "#info" {
                         let info: atrium_api::com::atproto::label::subscribe_labels::Info =
@@ -202,7 +228,44 @@ impl GetCmd {
                 }
                 _ => {}
             }
-            // TODO(widders): timeout when stream catches up and crawls
+        }
+    }
+}
+
+/// Mapping from (src, val) to sets of (uri, cid) applied that we build up live
+// TODO(widders): use interning
+struct LabelCounts {
+    map: BTreeMap<(String, String), BTreeSet<(String, Option<String>)>>,
+}
+
+impl LabelCounts {
+    fn new() -> Self {
+        Self {
+            map: BTreeMap::new(),
+        }
+    }
+
+    fn add_label(&mut self, label: LabelRecord) {
+        let key = (label.src, label.val);
+        let val = (label.target_uri, label.target_cid);
+        if label.neg {
+            // Remove it if it's a negation entry
+            if let Entry::Occupied(mut entry) = self.map.entry(key) {
+                entry.get_mut().remove(&val);
+            }
+        } else {
+            // Otherwise add it
+            self.map.entry(key).or_default().insert(val);
+        }
+    }
+
+    fn print_summary(&self) {
+        println!("--------");
+        println!("Summary:");
+        println!("--------");
+        for ((did, label_val), targets) in &self.map {
+            let times = targets.len();
+            println!("{did} applied label {label_val:?} {times}x");
         }
     }
 }
