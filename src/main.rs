@@ -236,8 +236,19 @@ impl GetCmd {
 
 /// Mapping from (src, val) to sets of (uri, cid) applied that we build up live
 // TODO(widders): use interning
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct LabelId {
+    src: String,
+    val: String,
+}
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct LabelTarget {
+    uri: String,
+    cid: Option<String>,
+}
+
 struct LabelCounts {
-    map: BTreeMap<(String, String), BTreeSet<(String, Option<String>)>>,
+    map: BTreeMap<LabelId, BTreeSet<LabelTarget>>,
 }
 
 impl LabelCounts {
@@ -248,8 +259,14 @@ impl LabelCounts {
     }
 
     fn add_label(&mut self, label: LabelRecord) {
-        let key = (label.src, label.val);
-        let val = (label.target_uri, label.target_cid);
+        let key = LabelId {
+            src: label.src,
+            val: label.val,
+        };
+        let val = LabelTarget {
+            uri: label.target_uri,
+            cid: label.target_cid,
+        };
         if label.neg {
             // Remove it if it's a negation entry
             if let Entry::Occupied(mut entry) = self.map.entry(key) {
@@ -265,9 +282,9 @@ impl LabelCounts {
         println!("--------");
         println!("Summary:");
         println!("--------");
-        for ((did, label_val), targets) in &self.map {
+        for (LabelId{src, val}, targets) in &self.map {
             let times = targets.len();
-            println!("{did} applied label {label_val:?} {times}x");
+            println!("{src} applied label {val:?} {times}x");
         }
     }
 }
