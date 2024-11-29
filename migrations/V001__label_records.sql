@@ -11,6 +11,6 @@ CREATE TABLE IF NOT EXISTS label_records(
     sig BLOB
 );
 CREATE UNIQUE INDEX IF NOT EXISTS label_records_outgoing
-ON label_records (src, val, seq, target_uri, target_cid);
+ON label_records (src, val, target_uri, target_cid, seq);
 CREATE INDEX IF NOT EXISTS label_records_incoming
 ON label_records (target_uri, val);
