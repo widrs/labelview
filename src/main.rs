@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
+use db::{get_data_dir, LabelRecord};
 use futures_util::StreamExt;
-use labelview::{get_data_dir, LabelRecord};
 use serde::Deserialize;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -10,6 +10,8 @@ use std::{
 use tokio::{select, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
+
+mod db;
 
 #[derive(Debug, Parser)]
 #[command(version)]
@@ -39,7 +41,7 @@ impl ConfigCmd {
                 Ok(())
             }
             ConfigCmd::Connect => {
-                labelview::connect()?;
+                db::connect()?;
                 println!("ok");
                 Ok(())
             }
@@ -80,7 +82,7 @@ impl GetCmd {
     }
 
     async fn go(self) -> Result<()> {
-        let mut db = labelview::connect()?;
+        let mut store = db::connect()?;
 
         // read the did document from the entryway to get the service endpoints for the labeler
         let http_client = reqwest::Client::new();
@@ -203,7 +205,7 @@ impl GetCmd {
                         let labels = LabelRecord::from_subscription_record(&mut bin)?;
                         for label in labels {
                             label
-                                .save(&mut db)
+                                .save(&mut store)
                                 .map_err(|e| anyhow!("error saving label record: {e}"))?;
 
                             // Add the label to our running tally as well
