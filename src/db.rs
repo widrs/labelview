@@ -107,3 +107,15 @@ impl LabelRecord {
         Ok(())
     }
 }
+
+pub fn witness_handle_did(db: &mut Connection, handle: &str, did: &str) -> Result<()> {
+    let mut stmt = db.prepare_cached(
+        r#"
+        INSERT INTO known_handles(did, handle, witnessed_timestamp)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT IGNORE;
+        "#,
+    )?;
+    stmt.execute(params!(handle, did, chrono::Utc::now()))?;
+    Ok(())
+}

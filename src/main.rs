@@ -98,7 +98,8 @@ impl GetCmd {
         let mut store = db::connect()?;
         let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
-                lookup::labeler_by_handle(&cmd.entryway_service, &cmd.handle_or_did).await?
+                lookup::labeler_by_handle(&mut store, &cmd.entryway_service, &cmd.handle_or_did)
+                    .await?
             }
             GetCmd::Direct(cmd) => cmd.labeler_service,
         };

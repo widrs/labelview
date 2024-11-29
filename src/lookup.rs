@@ -1,3 +1,4 @@
+use crate::db;
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use std::io::Write;
@@ -51,7 +52,11 @@ pub async fn did(entryway_service: &str, handle_or_did: &str) -> Result<DidDescr
     })
 }
 
-pub async fn labeler_by_handle(entryway_service: &str, handle_or_did: &str) -> Result<String> {
+pub async fn labeler_by_handle(
+    store: &mut db::Connection,
+    entryway_service: &str,
+    handle_or_did: &str,
+) -> Result<String> {
     // read the did document from the entryway to get the service endpoints for the labeler
     print!("looking up did...");
     std::io::stdout().flush()?;
@@ -82,6 +87,7 @@ pub async fn labeler_by_handle(entryway_service: &str, handle_or_did: &str) -> R
     println!("handle: {handle}");
     println!("did:    {did}");
     println!("handle is correct: {handle_is_correct:?}");
+    db::witness_handle_did(store, handle, did)?;
     println!();
     let pds_text = pds.as_deref().unwrap_or("(no pds endpoint defined)");
     let labeler_text = labeler
