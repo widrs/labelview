@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
-use rusqlite::{params, Connection};
+use rusqlite::params;
+
+pub use rusqlite::Connection;
 
 mod embedded {
     refinery::embed_migrations!("migrations");
@@ -55,24 +57,29 @@ impl LabelRecord {
         if !(1..i64::MAX).contains(&seq) {
             bail!("non-positive sequence number in label update: {seq}");
         }
-        labels.data.labels.into_iter().map(|label| {
-            let label = label.data;
-            if label.ver != Some(1) {
-                let ver = label.ver;
-                bail!("unsupported or missing label record version {ver:?}");
-            }
-            Ok(Self{
-                src: label.src.to_string(),
-                seq,
-                create_timestamp: label.cts.as_str().to_owned(),
-                expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
-                neg: label.neg.unwrap_or(false),
-                target_uri: label.uri,
-                target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
-                val: label.val,
-                sig: label.sig,
+        labels
+            .data
+            .labels
+            .into_iter()
+            .map(|label| {
+                let label = label.data;
+                if label.ver != Some(1) {
+                    let ver = label.ver;
+                    bail!("unsupported or missing label record version {ver:?}");
+                }
+                Ok(Self {
+                    src: label.src.to_string(),
+                    seq,
+                    create_timestamp: label.cts.as_str().to_owned(),
+                    expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
+                    neg: label.neg.unwrap_or(false),
+                    target_uri: label.uri,
+                    target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
+                    val: label.val,
+                    sig: label.sig,
+                })
             })
-        }).collect()
+            .collect()
     }
 
     pub fn save(&self, db: &mut Connection) -> Result<()> {
