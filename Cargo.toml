@@ -6,16 +6,18 @@ resolver = "2"
 
 [dependencies]
 anyhow = "1.0.93"
-atrium-api = "0.24.8"
+atrium-api = { version = "0.24.8", features = ["namespace-appbsky"] }
 ciborium = "0.2.2"
 clap = { version = "4.5.21", features = ["derive"] }
 directories = "5.0.1"
 futures-util = "0.3.31"
 libsqlite3-sys = { version = "0.28.0", features = ["bundled"] } # TODO(widders): custom bundle
 refinery = { version = "0.8.14", features = ["rusqlite"] }
+reqwest = { version = "0.12.9", default-features = false, features = ["brotli", "http2", "rustls-tls-webpki-roots", "zstd"] }
 rusqlite = { version = "0.31.0", features = ["modern_sqlite", "rusqlite-macros"] }
-rustls = "0.23.18" # default features
+rustls = { version = "0.23.19", default-features = false, features = ["ring"] }
 serde = { version = "1.0.215", features = ["derive"] }
+serde_json = { version = "1.0.133", features = ["float_roundtrip"] }
 tokio = { version = "1.41.1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros"] }
 tokio-tungstenite = { version = "0.24.0", features = ["connect", "rustls-tls-native-roots", "url"] }
 url = "2.5.4"

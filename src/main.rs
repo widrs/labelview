@@ -44,9 +44,12 @@ impl ConfigCmd {
 
 #[derive(Debug, Args)]
 struct GetCmd {
-    /// Domain name of the labeler to read from
-    #[arg(required = true, value_name = "DOMAIN-NAME")]
-    domain_name: String,
+    /// Handle or DID of the labeler to read from
+    #[arg(required = true, value_name = "HANDLE-OR-DID")]
+    handle_or_did: String,
+    /// Entryway service to use for did lookups
+    #[arg(long, default_value = "bsky.social", value_name = "ENTRYWAY-SERVICE")]
+    entryway_service: String,
 }
 
 impl GetCmd {
@@ -73,15 +76,90 @@ impl GetCmd {
 
     async fn go(self) -> Result<()> {
         let mut db = labelview::connect()?;
-        // TODO(widders): get the service domain from the did service record
-        let domain_name = &self.domain_name;
+
+        // read the did document from the entryway to get the service endpoints for the labeler
+        let http_client = reqwest::Client::new();
+        print!("looking up did...");
+        let entryway_service = &self.entryway_service;
+        let did_lookup = http_client
+            .get(format!(
+                "https://{entryway_service}/xrpc/com.atproto.repo.describeRepo"
+            ))
+            .query(&[("repo", self.handle_or_did.as_str())])
+            .send()
+            .await
+            .map_err(|e| anyhow!("error fetching did: {e}"))?;
+
+        // https://docs.bsky.app/docs/api/com-atproto-repo-describe-repo
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct DidDescription {
+            handle: String,
+            did: String,
+            handle_is_correct: bool,
+            did_doc: atrium_api::did_doc::DidDocument,
+            #[allow(dead_code)]
+            collections: Vec<String>,
+        }
+
+        // parse the json response
+        let desc: DidDescription = serde_json::from_slice(
+            &did_lookup
+                .bytes()
+                .await
+                .map_err(|e| anyhow!("error reading did from response: {e}"))?,
+        )
+        .map_err(|e| anyhow!("error parsing did document from entryway: {e}"))?;
+        println!("ok");
+
+        // read the handle, did, and pds & labeler endpoint urls from the response
+        let DidDescription {
+            handle,
+            did,
+            handle_is_correct,
+            ..
+        } = &desc;
+        let pds = desc.did_doc.service.iter().flatten().find_map(|service| {
+            if service.id.ends_with("#atproto_pds") && service.r#type == "AtprotoPersonalDataServer"
+            {
+                Some(service.service_endpoint.clone())
+            } else {
+                None
+            }
+        });
+        let labeler = desc.did_doc.service.iter().flatten().find_map(|service| {
+            if service.id.ends_with("#atproto_labeler") && service.r#type == "AtprotoLabeler" {
+                Some(service.service_endpoint.clone())
+            } else {
+                None
+            }
+        });
+        println!("handle: {handle}");
+        println!("did:    {did}");
+        println!("handle is correct: {handle_is_correct:?}");
+        println!();
+        let pds_text = pds.as_deref().unwrap_or("(no pds endpoint defined)");
+        let labeler_text = labeler
+            .as_deref()
+            .unwrap_or("(no labeler endpoint defined)");
+        println!("pds:     {pds_text}");
+        println!("labeler: {labeler_text}");
+        let Some(labeler) = labeler else {
+            bail!("that entity doesn't seem to be a labeler.");
+        };
+
+        let labeler_url = Url::parse(&labeler)
+            .map_err(|e| anyhow!("could not parse labeler endpoint as url: {e}"))?;
+        let Some(labeler_domain) = labeler_url.domain() else {
+            bail!("labeler endpoint url does not seem to specify a domain");
+        };
+
+        println!();
+        println!("connecting to labeler service");
         // TODO(widders): catch-up or re-tread data we already have to look for changes
         let address = Url::parse(&format!(
-            "wss://{domain_name}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
+            "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
         ))?;
-        if address.domain() != Some(domain_name) {
-            bail!("invalid domain")
-        }
         let (stream, _response) = connect_async(&address).await?;
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
