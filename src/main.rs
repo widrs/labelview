@@ -53,7 +53,9 @@ impl ConfigCmd {
 
 #[derive(Debug, Subcommand)]
 enum GetCmd {
+    /// Get labels looking up the labeler via handle or did
     Lookup(GetLookupCmd),
+    /// Get labels directly from the labeler service
     Direct(GetDirectCmd),
 }
 
