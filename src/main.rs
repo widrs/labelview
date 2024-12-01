@@ -98,12 +98,16 @@ impl GetCmd {
 
     async fn go(self) -> Result<()> {
         let mut store = db::connect()?;
-        let labeler_domain = match self {
+        let labeler_address = match self {
             GetCmd::Lookup(cmd) => {
                 lookup::labeler_by_handle(&mut store, &cmd.entryway_service, &cmd.handle_or_did)
                     .await?
             }
             GetCmd::Direct(cmd) => cmd.labeler_service,
+        };
+        let labeler_url = Url::parse(&labeler_address)?;
+        let Some(labeler_domain) = labeler_url.domain() else {
+            panic!("no labeler domain");
         };
 
         let mut label_counts = LabelCounts::new();
@@ -111,7 +115,7 @@ impl GetCmd {
         let address = Url::parse(&format!(
             "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
         ))?;
-        if address.domain() != Some(labeler_domain.as_str()) {
+        if address.domain() != Some(labeler_domain) {
             bail!("seemingly invalid service domain {labeler_domain:?}");
         }
         println!();
