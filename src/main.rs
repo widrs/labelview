@@ -101,8 +101,11 @@ impl GetCmd {
         println!("looking up did...");
         let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
+                // make sure we have a did
                 let did = lookup::did(&cmd.handle_or_did).await?;
+                // get the document
                 let doc = lookup::did_doc(&cmd.plc_directory, &did).await?;
+                // get all the bits from the did-doc and print some of them out
                 let handle = lookup::handle_from_doc(&doc);
                 let handle_text = handle.unwrap_or("(no handle listed in did)");
                 // read the handle, did, and pds & labeler endpoint urls from the response
@@ -121,6 +124,7 @@ impl GetCmd {
                 println!("pds:     {pds_text}");
                 println!("labeler: {labeler_text}");
 
+                // record the handle/did association we got
                 if let Some(handle) = handle {
                     db::witness_handle_did(&mut store, handle, &did)?;
                 }
@@ -149,6 +153,7 @@ impl GetCmd {
         let (stream, _response) = connect_async(&address).await?;
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
+        // read websocket messages from the connection until they slow down
         loop {
             // TODO(widders): customizable timeout
             let timeout = sleep(Duration::from_millis(5000));
@@ -184,6 +189,8 @@ impl GetCmd {
                             label
                                 .save(&mut store)
                                 .map_err(|e| anyhow!("error saving label record: {e}"))?;
+                            // TODO(widders): check that the labels are from the expected did
+                            // TODO(widders): can we check the signature? do we know how
 
                             // Add the label to our running tally as well
                             label_counts.add_label(label);
