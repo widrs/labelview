@@ -1,11 +1,8 @@
-use crate::db;
 use anyhow::{anyhow, bail, Result};
-use std::io::Write;
-use url::Url;
 
 pub use atrium_api::did_doc::DidDocument;
 
-async fn did(handle_or_did: &str) -> Result<String> {
+pub async fn did(handle_or_did: &str) -> Result<String> {
     if handle_or_did.starts_with("did:") {
         Ok(handle_or_did.to_owned())
     } else {
@@ -54,7 +51,7 @@ async fn find_did_in_well_known(https_domain: &str) -> Option<String> {
     }
 }
 
-async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
+pub async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
     let doc: DidDocument = match did.strip_prefix("did:").and_then(|s| s.split_once(':')) {
         Some(("plc", _)) => {
             println!("reading did document from plc directory...");
@@ -102,63 +99,23 @@ async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
     Ok(doc)
 }
 
-fn handle_from_doc(doc: &DidDocument) -> Option<&str> {
+pub fn handle_from_doc(doc: &DidDocument) -> Option<&str> {
     doc.also_known_as
         .iter()
         .flatten()
         .find_map(|aka| aka.strip_prefix("at://"))
 }
 
-pub async fn labeler_by_handle(
-    store: &mut db::Connection,
-    pds_directory: &str,
-    handle_or_did: &str,
-) -> Result<String> {
-    // read the did document from the entryway to get the service endpoints for the labeler
-    println!("looking up did...");
-    std::io::stdout().flush()?;
-    let did = did(handle_or_did).await?;
-    let doc = did_doc(pds_directory, &did).await?;
-    let handle = handle_from_doc(&doc);
-    let handle_text = handle.unwrap_or("(no handle listed in did)");
-    // read the handle, did, and pds & labeler endpoint urls from the response
-    let pds = doc.service.iter().flatten().find_map(|service| {
-        if service.id.ends_with("#atproto_pds") && service.r#type == "AtprotoPersonalDataServer" {
-            Some(service.service_endpoint.clone())
+pub fn service_from_doc<'a>(
+    doc: &'a DidDocument,
+    id_suffix: &str,
+    service_type: &str,
+) -> Option<&'a str> {
+    doc.service.iter().flatten().find_map(|service| {
+        if service.id.ends_with(id_suffix) && service.r#type == service_type {
+            Some(service.service_endpoint.as_str())
         } else {
             None
         }
-    });
-    let labeler = doc.service.iter().flatten().find_map(|service| {
-        if service.id.ends_with("#atproto_labeler") && service.r#type == "AtprotoLabeler" {
-            Some(service.service_endpoint.clone())
-        } else {
-            None
-        }
-    });
-
-    println!();
-    println!("handle: {handle_text}");
-    println!("did:    {did}");
-    println!();
-    let pds_text = pds.as_deref().unwrap_or("(no pds endpoint defined)");
-    let labeler_text = labeler
-        .as_deref()
-        .unwrap_or("(no labeler endpoint defined)");
-    println!("pds:     {pds_text}");
-    println!("labeler: {labeler_text}");
-
-    if let Some(handle) = handle {
-        db::witness_handle_did(store, handle, &did)?;
-    }
-    let Some(labeler) = labeler else {
-        bail!("that entity doesn't seem to be a labeler.");
-    };
-
-    let labeler_url = Url::parse(&labeler)
-        .map_err(|e| anyhow!("could not parse labeler endpoint as url: {e}"))?;
-    if labeler_url.domain().is_none() {
-        bail!("labeler endpoint url does not seem to specify a domain");
-    }
-    Ok(labeler)
+    })
 }

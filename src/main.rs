@@ -98,16 +98,44 @@ impl GetCmd {
 
     async fn go(self) -> Result<()> {
         let mut store = db::connect()?;
-        let labeler_address = match self {
+        println!("looking up did...");
+        let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
-                lookup::labeler_by_handle(&mut store, &cmd.plc_directory, &cmd.handle_or_did)
-                    .await?
+                let did = lookup::did(&cmd.handle_or_did).await?;
+                let doc = lookup::did_doc(&cmd.plc_directory, &did).await?;
+                let handle = lookup::handle_from_doc(&doc);
+                let handle_text = handle.unwrap_or("(no handle listed in did)");
+                // read the handle, did, and pds & labeler endpoint urls from the response
+                let pds =
+                    lookup::service_from_doc(&doc, "#atproto_pds", "AtprotoPersonalDataServer");
+                let labeler = lookup::service_from_doc(&doc, "#atproto_labeler", "AtprotoLabeler");
+
+                println!();
+                println!("handle: {handle_text}");
+                println!("did:    {did}");
+                println!();
+                let pds_text = pds.as_deref().unwrap_or("(no pds endpoint defined)");
+                let labeler_text = labeler
+                    .as_deref()
+                    .unwrap_or("(no labeler endpoint defined)");
+                println!("pds:     {pds_text}");
+                println!("labeler: {labeler_text}");
+
+                if let Some(handle) = handle {
+                    db::witness_handle_did(&mut store, handle, &did)?;
+                }
+                let Some(labeler) = labeler else {
+                    bail!("that entity doesn't seem to be a labeler.");
+                };
+
+                let labeler_url = Url::parse(&labeler)
+                    .map_err(|e| anyhow!("could not parse labeler endpoint as url: {e}"))?;
+                let Some(labeler_domain) = labeler_url.domain() else {
+                    bail!("labeler endpoint url does not seem to specify a domain");
+                };
+                labeler_domain.to_owned()
             }
             GetCmd::Direct(cmd) => cmd.labeler_service,
-        };
-        let labeler_url = Url::parse(&labeler_address)?;
-        let Some(labeler_domain) = labeler_url.domain() else {
-            panic!("no labeler domain");
         };
 
         let mut label_counts = LabelCounts::new();
@@ -115,9 +143,6 @@ impl GetCmd {
         let address = Url::parse(&format!(
             "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
         ))?;
-        if address.domain() != Some(labeler_domain) {
-            bail!("seemingly invalid service domain {labeler_domain:?}");
-        }
         println!();
         println!("streaming from labeler service");
         // TODO(widders): catch-up or re-tread data we already have to look for changes
