@@ -11,7 +11,7 @@ pub async fn did(handle_or_did: &str) -> Result<String> {
         } else if let Some(did) = find_did_in_well_known(handle_or_did).await {
             return Ok(did);
         }
-        bail!("could not resolve did from handle")
+        bail!("could not resolve did from handle");
     }
 }
 
