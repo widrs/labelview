@@ -88,9 +88,10 @@ impl LabelRecord {
             INSERT INTO label_records(
                 src, seq, create_timestamp,
                 expiry_timestamp, neg, target_uri,
-                target_cid, val, sig
+                target_cid, val, sig,
+                last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
         "#,
         )?;
         stmt.execute(params!(
@@ -102,7 +103,8 @@ impl LabelRecord {
             &self.target_uri,
             &self.target_cid,
             &self.val,
-            &self.sig
+            &self.sig,
+            chrono::Utc::now(),
         ))?;
         Ok(())
     }
