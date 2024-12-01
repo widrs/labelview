@@ -179,6 +179,7 @@ impl GetCmd {
                     println!("text message: {text:?}")
                 }
                 Message::Binary(bin) => {
+                    let now = chrono::Utc::now();
                     let mut bin = bin.as_slice();
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
@@ -187,7 +188,7 @@ impl GetCmd {
                         let labels = LabelRecord::from_subscription_record(&mut bin)?;
                         for label in labels {
                             label
-                                .save(&mut store)
+                                .save(&mut store, &now)
                                 .map_err(|e| anyhow!("error saving label record: {e}"))?;
                             // TODO(widders): check that the labels are from the expected did
                             // TODO(widders): can we check the signature? do we know how

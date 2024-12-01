@@ -82,7 +82,7 @@ impl LabelRecord {
             .collect()
     }
 
-    pub fn save(&self, db: &mut Connection) -> Result<()> {
+    pub fn save(&self, db: &mut Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
         let mut stmt = db.prepare_cached(
             r#"
             INSERT INTO label_records(
@@ -92,7 +92,7 @@ impl LabelRecord {
                 last_seen_timestamp
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
-        "#,
+            "#,
         )?;
         stmt.execute(params!(
             &self.src,
@@ -104,7 +104,7 @@ impl LabelRecord {
             &self.target_cid,
             &self.val,
             &self.sig,
-            chrono::Utc::now(),
+            now,
         ))?;
         Ok(())
     }
