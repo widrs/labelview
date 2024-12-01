@@ -63,9 +63,9 @@ enum GetCmd {
 struct GetLookupCmd {
     /// Handle or DID of the labeler to read from
     handle_or_did: String,
-    /// Entryway service to use for did lookups
-    #[arg(long, default_value = "bsky.social")]
-    entryway_service: String,
+    /// Directory service to use for plc lookups
+    #[arg(long, default_value = "plc.directory")]
+    plc_directory: String,
 }
 
 #[derive(Debug, Args)]
@@ -100,7 +100,7 @@ impl GetCmd {
         let mut store = db::connect()?;
         let labeler_address = match self {
             GetCmd::Lookup(cmd) => {
-                lookup::labeler_by_handle(&mut store, &cmd.entryway_service, &cmd.handle_or_did)
+                lookup::labeler_by_handle(&mut store, &cmd.plc_directory, &cmd.handle_or_did)
                     .await?
             }
             GetCmd::Direct(cmd) => cmd.labeler_service,
