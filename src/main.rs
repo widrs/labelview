@@ -212,7 +212,7 @@ impl GetCmd {
 }
 
 /// Mapping from (src, val) to sets of (uri, cid) applied that we build up live
-// TODO(widders): use interning
+// TODO(widders): use interning (actually just replace this with summarize)
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct LabelId {
     src: String,
