@@ -3,6 +3,8 @@ use anyhow::{anyhow, bail, Result};
 pub use atrium_api::did_doc::DidDocument;
 
 pub async fn did(handle_or_did: &str) -> Result<String> {
+    // most of the lookup logic here is learned from
+    // https://github.com/bluesky-social/atproto/tree/main/packages/identity
     if handle_or_did.starts_with("did:") {
         Ok(handle_or_did.to_owned())
     } else {
