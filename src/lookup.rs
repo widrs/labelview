@@ -41,13 +41,13 @@ async fn find_did_in_dns(dns_domain: &str) -> Option<String> {
 async fn find_did_in_well_known(https_domain: &str) -> Option<String> {
     println!("looking up did via dns HTTPS .well-known...");
     let http_client = reqwest::Client::new();
-    let did_lookup = http_client
+    let response = http_client
         .get(format!("https://{https_domain}/.well-known/atproto-did"))
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
         .ok()?;
-    let content = did_lookup.bytes().await.ok()?;
+    let content = response.bytes().await.ok()?;
     match std::str::from_utf8(&content) {
         Ok(content) if content.starts_with("did:") => Some(content.to_owned()),
         _ => None,
@@ -55,30 +55,39 @@ async fn find_did_in_well_known(https_domain: &str) -> Option<String> {
 }
 
 async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
-    match did.strip_prefix("did:").and_then(|s| s.split_once(':')) {
+    let doc: DidDocument = match did.strip_prefix("did:").and_then(|s| s.split_once(':')) {
         Some(("plc", _)) => {
             println!("reading did document from plc directory...");
             let http_client = reqwest::Client::new();
-            let did_lookup = http_client
+            let response = http_client
                 .get(format!("https://{plc_directory}/{did}"))
                 .send()
                 .await
                 .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| anyhow!("error fetching did: {e}"))?;
+                .map_err(|e| anyhow!("error fetching did from plc directory: {e}"))?;
             // parse the json response
-            let did_lookup = did_lookup
+            let content = response
                 .bytes()
                 .await
-                .map_err(|e| anyhow!("error reading did from response: {e}"))?;
-            let doc: DidDocument = serde_json::from_slice(&did_lookup)
-                .map_err(|e| anyhow!("error parsing did document from plc directory: {e}"))?;
-            if doc.id != did {
-                bail!("plc directory response didn't match requested did");
-            }
-            Ok(doc)
+                .map_err(|e| anyhow!("error reading did from plc directory response: {e}"))?;
+            serde_json::from_slice(&content)
+                .map_err(|e| anyhow!("error parsing did document from plc directory: {e}"))?
         }
-        Some(("web", _)) => {
-            todo!()
+        Some(("web", domain)) => {
+            let http_client = reqwest::Client::new();
+            let response = http_client
+                .get(format!("https://{domain}/.well-known/did.json"))
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(|e| anyhow!("error fetching did from .well-known: {e}"))?;
+            // parse the json response
+            let content = response
+                .bytes()
+                .await
+                .map_err(|e| anyhow!("error reading did from .well-known response: {e}"))?;
+            serde_json::from_slice(&content)
+                .map_err(|e| anyhow!("error parsing did document from .well-known: {e}"))?
         }
         Some(_) => {
             bail!("unsupported did type");
@@ -86,7 +95,11 @@ async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
         None => {
             bail!("not a did");
         }
+    };
+    if doc.id != did {
+        bail!("the fetched did document didn't match the request");
     }
+    Ok(doc)
 }
 
 fn handle_from_doc(doc: &DidDocument) -> Option<&str> {
