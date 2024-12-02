@@ -84,14 +84,14 @@ impl LabelRecord {
     }
 
     pub fn load_known_range(
-        db: &mut Connection,
+        db: &Connection,
         src: &str,
         seq_range: RangeInclusive<i64>,
     ) -> Result<Vec<Self>> {
         todo!()
     }
 
-    pub fn save(&self, db: &mut Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+    pub fn save(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
         let mut stmt = db.prepare_cached(
             r#"
             INSERT INTO label_records(
@@ -120,7 +120,7 @@ impl LabelRecord {
 }
 
 /// Record the association between a handle and a did
-pub fn witness_handle_did(db: &mut Connection, handle: &str, did: &str) -> Result<()> {
+pub fn witness_handle_did(db: &Connection, handle: &str, did: &str) -> Result<()> {
     let mut stmt = db.prepare_cached(
         r#"
         INSERT OR REPLACE INTO known_handles(did, handle, witnessed_timestamp)
@@ -132,7 +132,7 @@ pub fn witness_handle_did(db: &mut Connection, handle: &str, did: &str) -> Resul
 }
 
 /// Fetch the last-seen label stream sequence for a labeler's update stream
-pub fn seq_for_src(db: &mut Connection, src_did: &str) -> Result<i64> {
+pub fn seq_for_src(db: &Connection, src_did: &str) -> Result<i64> {
     let mut stmt = db.prepare_cached(
         r#"
         SELECT coalesce(max(seq), 0)

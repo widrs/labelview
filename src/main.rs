@@ -266,10 +266,10 @@ impl GetCmd {
                         }
                         if !retreading {
                             // when not retreading, we simply slam it all in there
-                            let mut tx = store.transaction()?;
+                            let tx = store.transaction()?;
                             for label in labels {
                                 label
-                                    .save(&mut tx, &now) // TODO(widders): move the tx into there
+                                    .save(&tx, &now)
                                     .map_err(|e| anyhow!("error saving label record: {e}"))?;
                                 // TODO(widders): can we check the signature? do we know how
                             }
