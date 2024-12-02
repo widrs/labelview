@@ -60,7 +60,17 @@ enum GetCmd {
 }
 
 #[derive(Debug, Args)]
+struct GetCommonArgs {
+    /// Timeout when the stream's updates start slowing down to assume that it is caught up, in
+    /// seconds. Non-positive values wait forever
+    #[arg(long, default_value = "5")]
+    stream_timeout: f64,
+}
+
+#[derive(Debug, Args)]
 struct GetLookupCmd {
+    #[clap(flatten)]
+    common: GetCommonArgs,
     /// Handle or DID of the labeler to read from
     handle_or_did: String,
     /// Directory service to use for plc lookups
@@ -70,6 +80,8 @@ struct GetLookupCmd {
 
 #[derive(Debug, Args)]
 struct GetDirectCmd {
+    #[clap(flatten)]
+    common: GetCommonArgs,
     /// Domain name for the labeler service
     labeler_service: String,
 }
@@ -98,9 +110,11 @@ impl GetCmd {
 
     async fn go(self) -> Result<()> {
         let mut store = db::connect()?;
+        let common_args;
         println!("looking up did...");
         let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
+                common_args = cmd.common;
                 // make sure we have a did
                 let did = lookup::did(&cmd.handle_or_did).await?;
                 // get the document
@@ -139,7 +153,10 @@ impl GetCmd {
                 };
                 labeler_domain.to_owned()
             }
-            GetCmd::Direct(cmd) => cmd.labeler_service,
+            GetCmd::Direct(cmd) => {
+                common_args = cmd.common;
+                cmd.labeler_service
+            }
         };
 
         let mut label_counts = LabelCounts::new();
@@ -154,13 +171,13 @@ impl GetCmd {
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
         // read websocket messages from the connection until they slow down
+        let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
         loop {
-            // TODO(widders): customizable timeout
-            let timeout = sleep(Duration::from_millis(5000));
+            let timeout = sleep_duration.clone().map(sleep);
             let next_frame_read = read.next();
             let message;
             select! {
-                _ = timeout => {
+                Some(()) = conditional_sleep(timeout) => {
                     println!("label subscription stream slowed and crawled; terminating");
                     println!();
                     label_counts.print_summary();
@@ -271,6 +288,14 @@ impl LabelCounts {
             let times = targets.len();
             println!("{src} applied label {val:?} {times}x");
         }
+    }
+}
+
+/// waits for the timer only if a one is provided
+async fn conditional_sleep(t: Option<tokio::time::Sleep>) -> Option<()> {
+    match t {
+        Some(timer) => Some(timer.await),
+        None => None,
     }
 }
 
