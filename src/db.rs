@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use anyhow::{anyhow, bail, Result};
 use rusqlite::params;
+use std::{ops::RangeInclusive, path::PathBuf};
 
 pub use rusqlite::Connection;
 
@@ -84,6 +83,14 @@ impl LabelRecord {
             .collect()
     }
 
+    pub fn load_known_range(
+        db: &mut Connection,
+        src: &str,
+        seq_range: RangeInclusive<i64>,
+    ) -> Result<Vec<Self>> {
+        todo!()
+    }
+
     pub fn save(&self, db: &mut Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
         let mut stmt = db.prepare_cached(
             r#"
@@ -107,7 +114,7 @@ impl LabelRecord {
             &self.val,
             &self.sig,
             now,
-        ))?;
+        ))?; // TODO(widders): probably need a better error message here
         Ok(())
     }
 }
@@ -133,7 +140,5 @@ pub fn seq_for_src(db: &mut Connection, src_did: &str) -> Result<i64> {
         WHERE src = ?1;
         "#,
     )?;
-    Ok(stmt.query_row(params!(src_did), |row| {
-        row.get(1)
-    })?)
+    Ok(stmt.query_row(params!(src_did), |row| row.get(1))?)
 }

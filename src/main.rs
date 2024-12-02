@@ -116,10 +116,12 @@ impl GetCmd {
         let mut labeler_dids = BTreeSet::<String>::new();
         let common_args;
         let cursor;
+        let retreading;
         println!("looking up did...");
         let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
                 common_args = cmd.common;
+                retreading = cmd.retread;
                 // make sure we have a did
                 let did = lookup::did(&cmd.handle_or_did).await?;
                 // because we are looking up the did document to find the service, we will know
@@ -169,6 +171,7 @@ impl GetCmd {
             GetCmd::Direct(cmd) => {
                 common_args = cmd.common;
                 cursor = 0;
+                retreading = true; // we don't know the did, and must retread
                 cmd.labeler_service
             }
         };
@@ -184,6 +187,7 @@ impl GetCmd {
         // TODO(widders): progress bar?
         // read websocket messages from the connection until they slow down
         let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
+        let mut last_seq = None;
         loop {
             let timeout = sleep_duration.clone().map(sleep);
             let next_frame_read = read.next();
@@ -213,6 +217,11 @@ impl GetCmd {
                     let ty = Self::header_type(&mut bin)?;
                     if ty == "#labels" {
                         let labels = LabelRecord::from_subscription_record(&mut bin)?;
+                        let mut seq_range = None;
+                        if let Some(label) = labels.first() {
+                            seq_range = Some(last_seq.unwrap_or(0)..=label.seq);
+                            last_seq = Some(label.seq);
+                        };
                         // most of the time we expect labelers to only output records from a single
                         // did, which should always be the did that we probably looked up to find
                         // it. however, we didn't necessarily look up the labeler, and there's
@@ -236,16 +245,36 @@ impl GetCmd {
                                 }
                                 labeler_dids.insert(src.clone());
                             }
+                            if retreading {
+                                let seq_range = seq_range.clone().unwrap();
+                                let known_labels = LabelRecord::load_known_range(
+                                    &mut store,
+                                    src,
+                                    seq_range,
+                                )?;
+                                // TODO(widders): filter labels down by src
+                                // TODO(widders): create a set of the old labels and subtract the
+                                //  newly received ones from it. alert when we find new ones, and
+                                //  when there are left-over ones that have been deleted since add
+                                //  them to a carry-forward struct that we will slowly eliminate
+                                //  from when we see those src/target pairs get superceded later
+                                //  or if we can see that the entry has simply expired
+
+                                // TODO(widders): finally, upsert the last-seen timestamp of the
+                                //  received label records
+                            }
                         }
-                        // TODO(widders): load existing labels and upsert timestamp in retread mode
-                        let tx = store.transaction()?;
-                        for label in labels {
-                            label
-                                .save(&mut store, &now)
-                                .map_err(|e| anyhow!("error saving label record: {e}"))?;
-                            // TODO(widders): can we check the signature? do we know how
+                        if !retreading {
+                            // when not retreading, we simply slam it all in there
+                            let mut tx = store.transaction()?;
+                            for label in labels {
+                                label
+                                    .save(&mut tx, &now) // TODO(widders): move the tx into there
+                                    .map_err(|e| anyhow!("error saving label record: {e}"))?;
+                                // TODO(widders): can we check the signature? do we know how
+                            }
+                            tx.commit()?;
                         }
-                        tx.commit()?;
                     } else if ty == "#info" {
                         let info: atrium_api::com::atproto::label::subscribe_labels::Info =
                             ciborium::from_reader(&mut bin)
