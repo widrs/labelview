@@ -9,12 +9,14 @@ mod embedded {
     refinery::embed_migrations!("migrations");
 }
 
+/// Returns the path to the application's sqlite database file
 pub fn get_data_dir() -> Result<PathBuf> {
     directories::ProjectDirs::from("", "", "labelview")
         .map(|dirs| dirs.data_dir().to_path_buf())
         .ok_or(anyhow!("could not find data directory"))
 }
 
+/// Connects to the application's database
 pub fn connect() -> Result<Connection> {
     let data_dir = get_data_dir()?;
     std::fs::create_dir_all(&data_dir)
@@ -110,6 +112,7 @@ impl LabelRecord {
     }
 }
 
+/// Record the association between a handle and a did
 pub fn witness_handle_did(db: &mut Connection, handle: &str, did: &str) -> Result<()> {
     let mut stmt = db.prepare_cached(
         r#"
@@ -119,4 +122,18 @@ pub fn witness_handle_did(db: &mut Connection, handle: &str, did: &str) -> Resul
     )?;
     stmt.execute(params!(handle, did, chrono::Utc::now()))?;
     Ok(())
+}
+
+/// Fetch the last-seen label stream sequence for a labeler's update stream
+pub fn seq_for_src(db: &mut Connection, src_did: &str) -> Result<i64> {
+    let mut stmt = db.prepare_cached(
+        r#"
+        SELECT coalesce(max(seq), 0)
+        FROM label_records
+        WHERE src = ?1;
+        "#,
+    )?;
+    Ok(stmt.query_row(params!(src_did), |row| {
+        row.get(1)
+    })?)
 }

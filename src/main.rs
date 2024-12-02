@@ -2,11 +2,9 @@ use crate::db::{get_data_dir, LabelRecord};
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
+use itertools::Itertools;
 use serde::Deserialize;
-use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::{collections::BTreeSet, time::Duration};
 use tokio::{select, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
@@ -76,6 +74,10 @@ struct GetLookupCmd {
     /// Directory service to use for plc lookups
     #[arg(long, default_value = "plc.directory")]
     plc_directory: String,
+    /// Retread the entire label stream, re-checking currently provided labels for inconsistencies
+    /// against already-seen labels from that labeler
+    #[arg(long)]
+    retread: bool,
 }
 
 #[derive(Debug, Args)]
@@ -110,13 +112,24 @@ impl GetCmd {
 
     async fn go(self) -> Result<()> {
         let mut store = db::connect()?;
+        // set of all src dids we have seen from the labeler stream so far
+        let mut labeler_dids = BTreeSet::<String>::new();
         let common_args;
+        let cursor;
         println!("looking up did...");
         let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
                 common_args = cmd.common;
                 // make sure we have a did
                 let did = lookup::did(&cmd.handle_or_did).await?;
+                // because we are looking up the did document to find the service, we will know
+                // ahead of time what the src did should be for all the label records
+                labeler_dids.insert(did.clone());
+                cursor = if cmd.retread {
+                    0
+                } else {
+                    db::seq_for_src(&mut store, &did)?
+                };
                 // get the document
                 let doc = lookup::did_doc(&cmd.plc_directory, &did).await?;
                 // get all the bits from the did-doc and print some of them out
@@ -155,14 +168,13 @@ impl GetCmd {
             }
             GetCmd::Direct(cmd) => {
                 common_args = cmd.common;
+                cursor = 0;
                 cmd.labeler_service
             }
         };
 
-        let mut label_counts = LabelCounts::new();
-
         let address = Url::parse(&format!(
-            "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
+            "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor={cursor}"
         ))?;
         println!();
         println!("streaming from labeler service");
@@ -179,8 +191,6 @@ impl GetCmd {
             select! {
                 Some(()) = conditional_sleep(timeout) => {
                     println!("label subscription stream slowed and crawled; terminating");
-                    println!();
-                    label_counts.print_summary();
                     return Ok(());
                 }
                 websocket_frame = next_frame_read => {
@@ -203,16 +213,39 @@ impl GetCmd {
                     let ty = Self::header_type(&mut bin)?;
                     if ty == "#labels" {
                         let labels = LabelRecord::from_subscription_record(&mut bin)?;
+                        // most of the time we expect labelers to only output records from a single
+                        // did, which should always be the did that we probably looked up to find
+                        // it. however, we didn't necessarily look up the labeler, and there's
+                        // actually nothing about the data that enforces that it couldn't be wildly
+                        // admixed.
+                        let batch_src_dids = labels
+                            .iter()
+                            .map(|label| &label.src)
+                            .unique()
+                            .map(ToOwned::to_owned)
+                            .collect_vec();
+                        for src in &batch_src_dids {
+                            if !labeler_dids.contains(src) {
+                                // if labeler_dids is already empty, it's probably because we
+                                // went directly to the labeler service without actually knowing
+                                // what the labeler did is supposed to be first.
+                                if !labeler_dids.is_empty() {
+                                    println!(
+                                        "WARNING -- additional did appeared in label stream: {src}"
+                                    );
+                                }
+                                labeler_dids.insert(src.clone());
+                            }
+                        }
+                        // TODO(widders): load existing labels and upsert timestamp in retread mode
+                        let tx = store.transaction()?;
                         for label in labels {
                             label
                                 .save(&mut store, &now)
                                 .map_err(|e| anyhow!("error saving label record: {e}"))?;
-                            // TODO(widders): check that the labels are from the expected did
                             // TODO(widders): can we check the signature? do we know how
-
-                            // Add the label to our running tally as well
-                            label_counts.add_label(label);
                         }
+                        tx.commit()?;
                     } else if ty == "#info" {
                         let info: atrium_api::com::atproto::label::subscribe_labels::Info =
                             ciborium::from_reader(&mut bin)
@@ -232,61 +265,6 @@ impl GetCmd {
                 }
                 _ => {}
             }
-        }
-    }
-}
-
-/// Mapping from (src, val) to sets of (uri, cid) applied that we build up live
-// TODO(widders): use interning (actually just replace this with summarize)
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-struct LabelId {
-    src: String,
-    val: String,
-}
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-struct LabelTarget {
-    uri: String,
-    cid: Option<String>,
-}
-
-struct LabelCounts {
-    map: BTreeMap<LabelId, BTreeSet<LabelTarget>>,
-}
-
-impl LabelCounts {
-    fn new() -> Self {
-        Self {
-            map: BTreeMap::new(),
-        }
-    }
-
-    fn add_label(&mut self, label: LabelRecord) {
-        let key = LabelId {
-            src: label.src,
-            val: label.val,
-        };
-        let val = LabelTarget {
-            uri: label.target_uri,
-            cid: label.target_cid,
-        };
-        if label.neg {
-            // Remove it if it's a negation entry
-            if let Entry::Occupied(mut entry) = self.map.entry(key) {
-                entry.get_mut().remove(&val);
-            }
-        } else {
-            // Otherwise add it
-            self.map.entry(key).or_default().insert(val);
-        }
-    }
-
-    fn print_summary(&self) {
-        println!("--------");
-        println!("Summary:");
-        println!("--------");
-        for (LabelId { src, val }, targets) in &self.map {
-            let times = targets.len();
-            println!("{src} applied label {val:?} {times}x");
         }
     }
 }
