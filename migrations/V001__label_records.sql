@@ -12,6 +12,6 @@ CREATE TABLE IF NOT EXISTS label_records(
     last_seen_timestamp TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS label_records_outgoing
-    ON label_records (src, val, target_uri, target_cid, seq);
+    ON label_records (src, val, target_uri, seq);
 CREATE INDEX IF NOT EXISTS label_records_incoming
     ON label_records (target_uri, val);
