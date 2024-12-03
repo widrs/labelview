@@ -327,13 +327,13 @@ impl LabelStore {
                     Entry::Occupied(mut entry) => {
                         let out = entry.get() + 1;
                         *entry.get_mut() = batch_seq;
-                        out
+                        out..=batch_seq
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(batch_seq);
-                        0
+                        0..=batch_seq
                     }
-                }..=batch_seq;
+                };
                 let mut known_old_labels = LabelRecord::load_known_range(&self, src, seq_range)?;
                 // subtract the received labels in this seq from that range
                 for label in &labels {
