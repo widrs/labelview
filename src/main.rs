@@ -387,7 +387,6 @@ impl LabelStore {
             for label in labels {
                 label
                     .insert(&tx, &now)?;
-                // TODO(widders): can we check the signature? do we know how
             }
         }
         tx.commit()?;

@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS label_records(
     target_uri TEXT NOT NULL,
     target_cid TEXT,
     val TEXT NOT NULL,
-    sig BLOB,
     last_seen_timestamp TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS label_records_outgoing

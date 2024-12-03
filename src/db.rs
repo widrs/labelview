@@ -50,7 +50,6 @@ pub struct LabelRecord {
     pub expiry_timestamp: Option<String>,
     pub neg: bool,
     pub target_cid: Option<String>,
-    pub sig: Option<Vec<u8>>,
 }
 
 impl Borrow<LabelKey> for LabelRecord {
@@ -79,6 +78,7 @@ impl LabelRecord {
                     let ver = label.ver;
                     bail!("unsupported or missing label record version {ver:?}");
                 }
+                // TODO(widders): can we check the signature? do we know how
                 Ok(Self {
                     key: LabelKey {
                         src: label.src.to_string(),
@@ -90,7 +90,6 @@ impl LabelRecord {
                     create_timestamp: label.cts.as_str().to_owned(),
                     expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
                     neg: label.neg.unwrap_or(false),
-                    sig: label.sig,
                 })
             })
             .collect()
@@ -120,9 +119,9 @@ impl LabelRecord {
             INSERT INTO label_records(
                 src, target_uri, val, seq,
                 create_timestamp, expiry_timestamp, neg,
-                target_cid, sig, last_seen_timestamp
+                target_cid, last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
             "#,
         )?;
         stmt.execute(params!(
@@ -134,7 +133,6 @@ impl LabelRecord {
             &self.expiry_timestamp,
             &self.neg,
             &self.target_cid,
-            &self.sig,
             now,
         )).map_err(|e| anyhow!("error inserting label record: {e}"))?;
         Ok(())
@@ -148,13 +146,13 @@ impl LabelRecord {
             INSERT INTO label_records(
                 src, target_uri, val, seq,
                 create_timestamp, expiry_timestamp, neg,
-                target_cid, sig, last_seen_timestamp
+                target_cid, last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT (src, val, target_uri, seq)
-                WHERE (create_timestamp, expiry_timestamp, neg, target_cid, sig) IS
-                    (?5, ?6, ?7, ?8, ?9)
-                DO UPDATE SET last_seen_timestamp = ?10;
+                WHERE (create_timestamp, expiry_timestamp, neg, target_cid) IS
+                    (?5, ?6, ?7, ?8)
+                DO UPDATE SET last_seen_timestamp = ?9;
             "#,
         )?;
         stmt.execute(params!(
@@ -166,7 +164,6 @@ impl LabelRecord {
             &self.expiry_timestamp,
             &self.neg,
             &self.target_cid,
-            &self.sig,
             now,
         )).map_err(|e| anyhow!("error upserting label record: {e}"))?;
         Ok(())
