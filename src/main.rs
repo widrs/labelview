@@ -1,10 +1,14 @@
-use crate::db::{get_data_dir, LabelRecord};
+use crate::db::{get_data_dir, LabelKey, LabelRecord};
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use serde::Deserialize;
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    ops::Deref,
+    time::Duration,
+};
 use tokio::{select, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
@@ -111,12 +115,12 @@ impl GetCmd {
     }
 
     async fn go(self) -> Result<()> {
-        let mut store = db::connect()?;
-        // set of all src dids we have seen from the labeler stream so far
-        let mut labeler_dids = BTreeSet::<String>::new();
-        let common_args;
-        let cursor;
-        let retreading;
+        let mut store = LabelStore::new()?;
+
+        let common_args; // common arguments
+        let retreading; // retread argument
+        let cursor; // resume cursor
+
         println!("looking up did...");
         let labeler_domain = match self {
             GetCmd::Lookup(cmd) => {
@@ -126,11 +130,11 @@ impl GetCmd {
                 let did = lookup::did(&cmd.handle_or_did).await?;
                 // because we are looking up the did document to find the service, we will know
                 // ahead of time what the src did should be for all the label records
-                labeler_dids.insert(did.clone());
-                cursor = if cmd.retread {
+                store.set_known_did(did.clone())?;
+                cursor = if retreading {
                     0
                 } else {
-                    db::seq_for_src(&mut store, &did)?
+                    db::seq_for_src(&store, &did)?
                 };
                 // get the document
                 let doc = lookup::did_doc(&cmd.plc_directory, &did).await?;
@@ -155,7 +159,7 @@ impl GetCmd {
 
                 // record the handle/did association we got
                 if let Some(handle) = handle {
-                    db::witness_handle_did(&mut store, handle, &did)?;
+                    db::witness_handle_did(&store, handle, &did)?;
                 }
                 let Some(labeler) = labeler else {
                     bail!("that entity doesn't seem to be a labeler.");
@@ -181,13 +185,11 @@ impl GetCmd {
         ))?;
         println!();
         println!("streaming from labeler service");
-        // TODO(widders): catch-up or re-tread data we already have to look for changes
         let (stream, _response) = connect_async(&address).await?;
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
         // read websocket messages from the connection until they slow down
         let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
-        let mut last_seq = None;
         loop {
             let timeout = sleep_duration.clone().map(sleep);
             let next_frame_read = read.next();
@@ -217,64 +219,7 @@ impl GetCmd {
                     let ty = Self::header_type(&mut bin)?;
                     if ty == "#labels" {
                         let labels = LabelRecord::from_subscription_record(&mut bin)?;
-                        let mut seq_range = None;
-                        if let Some(label) = labels.first() {
-                            seq_range = Some(last_seq.unwrap_or(0)..=label.seq);
-                            last_seq = Some(label.seq);
-                        };
-                        // most of the time we expect labelers to only output records from a single
-                        // did, which should always be the did that we probably looked up to find
-                        // it. however, we didn't necessarily look up the labeler, and there's
-                        // actually nothing about the data that enforces that it couldn't be wildly
-                        // admixed.
-                        let batch_src_dids = labels
-                            .iter()
-                            .map(|label| &label.src)
-                            .unique()
-                            .map(ToOwned::to_owned)
-                            .collect_vec();
-                        for src in &batch_src_dids {
-                            if !labeler_dids.contains(src) {
-                                // if labeler_dids is already empty, it's probably because we
-                                // went directly to the labeler service without actually knowing
-                                // what the labeler did is supposed to be first.
-                                if !labeler_dids.is_empty() {
-                                    println!(
-                                        "WARNING -- additional did appeared in label stream: {src}"
-                                    );
-                                }
-                                labeler_dids.insert(src.clone());
-                            }
-                            if retreading {
-                                let seq_range = seq_range.clone().unwrap();
-                                let known_labels = LabelRecord::load_known_range(
-                                    &mut store,
-                                    src,
-                                    seq_range,
-                                )?;
-                                // TODO(widders): filter labels down by src
-                                // TODO(widders): create a set of the old labels and subtract the
-                                //  newly received ones from it. alert when we find new ones, and
-                                //  when there are left-over ones that have been deleted since add
-                                //  them to a carry-forward struct that we will slowly eliminate
-                                //  from when we see those src/target pairs get superceded later
-                                //  or if we can see that the entry has simply expired
-
-                                // TODO(widders): finally, upsert the last-seen timestamp of the
-                                //  received label records
-                            }
-                        }
-                        if !retreading {
-                            // when not retreading, we simply slam it all in there
-                            let tx = store.transaction()?;
-                            for label in labels {
-                                label
-                                    .save(&tx, &now)
-                                    .map_err(|e| anyhow!("error saving label record: {e}"))?;
-                                // TODO(widders): can we check the signature? do we know how
-                            }
-                            tx.commit()?;
-                        }
+                        store.process_labels(labels, now, retreading)?;
                     } else if ty == "#info" {
                         let info: atrium_api::com::atproto::label::subscribe_labels::Info =
                             ciborium::from_reader(&mut bin)
@@ -303,6 +248,156 @@ async fn conditional_sleep(t: Option<tokio::time::Sleep>) -> Option<()> {
     match t {
         Some(timer) => Some(timer.await),
         None => None,
+    }
+}
+
+struct LabelStore {
+    store: db::Connection,
+    /// set of all src dids we have seen from the labeler stream so far
+    labeler_dids: HashSet<String>,
+    /// count of newly added records found during a retread
+    suspicious_new_records: usize,
+    /// count of negative records that have gone missing during a retread
+    disappeared_negative_records: usize,
+    /// last seq seen for each label src
+    last_seq: HashMap<String, i64>,
+    // set of old unexpired non-negative records which were missing from the stream and, if they are
+    // not negated in a future seq later in the stream, would still be in effect.
+    disappeared_old_records: HashMap<LabelKey, LabelRecord>,
+}
+
+impl LabelStore {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            store: db::connect()?,
+            ..Default::default()
+        })
+    }
+
+    /// record the foreknowledge of an expected src did
+    fn set_known_did(&mut self, did: String) -> Result<()> {
+        if !self.labeler_dids.is_empty() {
+            bail!("label store already knows of a labeler did");
+        }
+        self.labeler_dids.insert(did);
+        Ok(())
+    }
+
+    fn process_labels(
+        &mut self,
+        labels: Vec<LabelRecord>,
+        now: chrono::DateTime<chrono::Utc>,
+        retreading: bool,
+    ) -> Result<()> {
+        let batch_seq = if let Some(label) = labels.first() {
+            label.seq
+        } else {
+            return Ok(());
+        };
+        // most of the time we expect labelers to only output records from a single did, which
+        // should always be the did that we probably looked up to find it. however, we didn't
+        // necessarily look up the labeler, and there's actually nothing about the data that
+        // enforces that it couldn't be wildly admixed.
+        let batch_src_dids = labels
+            .iter()
+            .map(|label| &label.key.src)
+            .unique()
+            .map(ToOwned::to_owned)
+            .collect_vec();
+        // process retreading logic for each labeler src did we know about
+        for src in &batch_src_dids {
+            if !self.labeler_dids.contains(src) {
+                // if labeler_dids is already empty, it's probably because we went directly to the
+                // labeler service without actually knowing what the labeler did is supposed to be
+                // first.
+                if !self.labeler_dids.is_empty() {
+                    println!("WARNING -- additional did appeared in label stream: {src}");
+                }
+                self.labeler_dids.insert(src.clone());
+            }
+            if retreading {
+                // fetch known old labels starting after the last received seq, up to and including
+                // the current seq. if we've seen this src before use its last_seq + 1 otherwise 0
+                // as the lower bound, and always leave this batch's seq in the map.
+                let seq_range = match self.last_seq.entry(src.clone()) {
+                    Entry::Occupied(entry) => {
+                        let out = *entry + 1;
+                        *entry = batch_seq;
+                        out
+                    }
+                    Entry::Vacant(entry) => {
+                        *entry.insert(batch_seq);
+                        0
+                    }
+                }..=batch_seq;
+                let mut known_old_labels = LabelRecord::load_known_range(&self, src, seq_range)?;
+                // subtract the received labels in this seq from that range
+                for label in &labels {
+                    if &label.key.src != src {
+                        continue;
+                    }
+                    if !known_old_labels.remove(label) {
+                        println!(
+                            "WARNING -- NEW label record appeared in label stream: {label:#?}"
+                        );
+                        self.suspicious_new_records += 1;
+                    }
+                    if label.neg {
+                        self.disappeared_old_records.remove(&label.key);
+                    }
+                }
+                // catalog all the old label records that we didn't see again this time
+                for disappeared in known_old_labels {
+                    if disappeared.neg {
+                        match self.disappeared_old_records.get(&disappeared.key) {
+                            Some(positive) if positive.is_expired(&now) => {
+                                // the negation record disappeared, but the record it was negating
+                                // was expired
+                                self.disappeared_old_records.remove(&positive.key);
+                            }
+                            _ => {
+                                println!(
+                                    "WARNING -- negation record disappeared from label stream: \
+                                    {disappeared:#?}"
+                                );
+                                self.disappeared_negative_records += 1;
+                            }
+                        }
+                    } else {
+                        // positive records all go into the disappeared log
+                        self.disappeared_old_records
+                            .insert(disappeared.key.clone(), disappeared);
+                    }
+                }
+            }
+        }
+        let tx = self.transaction()?;
+        if retreading {
+            // when retreading, we upsert
+            for label in labels {
+                label.upsert(&tx, &now)?;
+            }
+        } else {
+            // when not retreading, we simply slam it all in there
+            for label in labels {
+                label
+                    .insert(&tx, &now)?;
+                // TODO(widders): can we check the signature? do we know how
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    // TODO(widders): finalize with probably one last fetch to the last possible seq, reporting of
+    //  disappeared records, etc
+}
+
+impl Deref for LabelStore {
+    type Target = db::Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.store
     }
 }
 

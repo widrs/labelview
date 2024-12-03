@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use rusqlite::params;
-use std::{ops::RangeInclusive, path::PathBuf};
+use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathBuf};
 
 pub use rusqlite::Connection;
 
@@ -35,17 +35,28 @@ pub fn connect() -> Result<Connection> {
     Ok(db)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LabelRecord {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LabelKey {
     pub src: String,
+    pub target_uri: String,
+    pub val: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LabelRecord {
+    pub key: LabelKey,
     pub seq: i64,
     pub create_timestamp: String,
     pub expiry_timestamp: Option<String>,
     pub neg: bool,
-    pub target_uri: String,
     pub target_cid: Option<String>,
-    pub val: String,
     pub sig: Option<Vec<u8>>,
+}
+
+impl Borrow<LabelKey> for LabelRecord {
+    fn borrow(&self) -> &LabelKey {
+        &self.key
+    }
 }
 
 impl LabelRecord {
@@ -69,52 +80,95 @@ impl LabelRecord {
                     bail!("unsupported or missing label record version {ver:?}");
                 }
                 Ok(Self {
-                    src: label.src.to_string(),
+                    key: LabelKey {
+                        src: label.src.to_string(),
+                        target_uri: label.uri,
+                        val: label.val,
+                    },
+                    target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
                     seq,
                     create_timestamp: label.cts.as_str().to_owned(),
                     expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
                     neg: label.neg.unwrap_or(false),
-                    target_uri: label.uri,
-                    target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
-                    val: label.val,
                     sig: label.sig,
                 })
             })
             .collect()
     }
 
+    pub fn is_expired(&self, now: &chrono::DateTime<chrono::Utc>) -> bool {
+        let Some(exp) = &self.expiry_timestamp else {
+            return false;
+        };
+        let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp) else {
+            return false;
+        };
+        exp > *now
+    }
+
     pub fn load_known_range(
         db: &Connection,
         src: &str,
         seq_range: RangeInclusive<i64>,
-    ) -> Result<Vec<Self>> {
+    ) -> Result<HashSet<Self>> {
         todo!()
     }
 
-    pub fn save(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+    pub fn insert(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
         let mut stmt = db.prepare_cached(
             r#"
             INSERT INTO label_records(
-                src, seq, create_timestamp,
-                expiry_timestamp, neg, target_uri,
-                target_cid, val, sig,
-                last_seen_timestamp
+                src, target_uri, val, seq,
+                create_timestamp, expiry_timestamp, neg,
+                target_cid, sig, last_seen_timestamp
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
             "#,
         )?;
         stmt.execute(params!(
-            &self.src,
+            &self.key.src,
+            &self.key.val,
+            &self.key.target_uri,
             &self.seq,
             &self.create_timestamp,
             &self.expiry_timestamp,
             &self.neg,
-            &self.target_uri,
             &self.target_cid,
-            &self.val,
             &self.sig,
             now,
-        ))?; // TODO(widders): probably need a better error message here
+        )).map_err(|e| anyhow!("error inserting label record: {e}"))?;
+        Ok(())
+    }
+
+    // upsert, updating the last seen timestamp of records that already exactly exist instead of
+    // failing
+    pub fn upsert(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+        let mut stmt = db.prepare_cached(
+            r#"
+            INSERT INTO label_records(
+                src, target_uri, val, seq,
+                create_timestamp, expiry_timestamp, neg,
+                target_cid, sig, last_seen_timestamp
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT (src, val, target_uri, seq)
+                WHERE (create_timestamp, expiry_timestamp, neg, target_cid, sig) IS
+                    (?5, ?6, ?7, ?8, ?9)
+                DO UPDATE SET last_seen_timestamp = ?10;
+            "#,
+        )?;
+        stmt.execute(params!(
+            &self.key.src,
+            &self.key.val,
+            &self.key.target_uri,
+            &self.seq,
+            &self.create_timestamp,
+            &self.expiry_timestamp,
+            &self.neg,
+            &self.target_cid,
+            &self.sig,
+            now,
+        )).map_err(|e| anyhow!("error upserting label record: {e}"))?;
         Ok(())
     }
 }
