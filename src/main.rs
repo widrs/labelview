@@ -270,7 +270,11 @@ impl LabelStore {
     fn new() -> Result<Self> {
         Ok(Self {
             store: db::connect()?,
-            ..Default::default()
+            labeler_dids: HashSet::new(),
+            suspicious_new_records: 0,
+            disappeared_negative_records: 0,
+            last_seq: HashMap::new(),
+            disappeared_old_records: HashMap::new(),
         })
     }
 
@@ -320,13 +324,13 @@ impl LabelStore {
                 // the current seq. if we've seen this src before use its last_seq + 1 otherwise 0
                 // as the lower bound, and always leave this batch's seq in the map.
                 let seq_range = match self.last_seq.entry(src.clone()) {
-                    Entry::Occupied(entry) => {
-                        let out = *entry + 1;
-                        *entry = batch_seq;
+                    Entry::Occupied(mut entry) => {
+                        let out = entry.get() + 1;
+                        *entry.get_mut() = batch_seq;
                         out
                     }
                     Entry::Vacant(entry) => {
-                        *entry.insert(batch_seq);
+                        entry.insert(batch_seq);
                         0
                     }
                 }..=batch_seq;
@@ -353,7 +357,7 @@ impl LabelStore {
                             Some(positive) if positive.is_expired(&now) => {
                                 // the negation record disappeared, but the record it was negating
                                 // was expired
-                                self.disappeared_old_records.remove(&positive.key);
+                                self.disappeared_old_records.remove(&disappeared.key);
                             }
                             _ => {
                                 println!(
@@ -371,7 +375,7 @@ impl LabelStore {
                 }
             }
         }
-        let tx = self.transaction()?;
+        let tx = self.store.transaction()?;
         if retreading {
             // when retreading, we upsert
             for label in labels {
