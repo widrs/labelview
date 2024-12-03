@@ -197,6 +197,7 @@ impl GetCmd {
             select! {
                 Some(()) = conditional_sleep(timeout) => {
                     println!("label subscription stream slowed and crawled; terminating");
+                    store.finalize()?;
                     return Ok(());
                 }
                 websocket_frame = next_frame_read => {
@@ -395,6 +396,9 @@ impl LabelStore {
 
     // TODO(widders): finalize with probably one last fetch to the last possible seq, reporting of
     //  disappeared records, etc
+    fn finalize(self) -> Result<()> {
+        todo!()
+    }
 }
 
 impl Deref for LabelStore {
