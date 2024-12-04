@@ -25,7 +25,8 @@ enum Command {
     /// Reads the labels from a labeler service
     #[clap(subcommand)]
     Get(GetCmd),
-    // TODO(widders): summarize commands
+    // TODO(widders): summarize commands: sum labels, sum by type (account or what kind of record),
+    //  probably do a validation pass on seq/cts ordering validity
 }
 
 #[derive(Debug, Subcommand)]
