@@ -110,7 +110,34 @@ impl LabelRecord {
         src: &str,
         seq_range: RangeInclusive<i64>,
     ) -> Result<HashSet<Self>> {
-        todo!()
+        let mut stmt = db.prepare_cached(
+            r#"
+            SELECT
+                src, target_uri, val,
+                seq, create_timestamp, expiry_timestamp,
+                neg, target_cid
+            FROM label_records
+            WHERE
+                src = ?1 AND
+                seq >= ?2 AND seq <= ?3
+            "#,
+        )?;
+        Ok(stmt
+            .query_map(params!(src, seq_range.start(), seq_range.end()), |row| {
+                Ok(Self {
+                    key: LabelKey {
+                        src: row.get(1)?,
+                        target_uri: row.get(2)?,
+                        val: row.get(3)?,
+                    },
+                    seq: row.get(4)?,
+                    create_timestamp: row.get(5)?,
+                    expiry_timestamp: row.get(6)?,
+                    neg: row.get(7)?,
+                    target_cid: row.get(8)?,
+                })
+            })?
+            .collect()?)
     }
 
     pub fn insert(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
