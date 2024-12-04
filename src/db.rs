@@ -134,7 +134,8 @@ impl LabelRecord {
             &self.neg,
             &self.target_cid,
             now,
-        )).map_err(|e| anyhow!("error inserting label record: {e}"))?;
+        ))
+        .map_err(|e| anyhow!("error inserting label record: {e}"))?;
         Ok(())
     }
 
@@ -165,7 +166,8 @@ impl LabelRecord {
             &self.neg,
             &self.target_cid,
             now,
-        )).map_err(|e| anyhow!("error upserting label record: {e}"))?;
+        ))
+        .map_err(|e| anyhow!("error upserting label record: {e}"))?;
         Ok(())
     }
 }
