@@ -379,15 +379,15 @@ impl LabelStore {
         }
         let tx = self.store.transaction()?;
         if retreading {
-            // when retreading, we upsert
+            // when retreading, we upsert. when there is a key collision and the entire record
+            // matches, we update the last seen timestamp, otherwise we err
             for label in labels {
                 label.upsert(&tx, &now)?;
             }
         } else {
-            // when not retreading, we simply slam it all in there
+            // when not retreading, we simply slam it all in there. any key collision will err
             for label in labels {
-                label
-                    .insert(&tx, &now)?;
+                label.insert(&tx, &now)?;
             }
         }
         tx.commit()?;

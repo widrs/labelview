@@ -95,6 +95,43 @@ impl LabelRecord {
             .collect()
     }
 
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            key: LabelKey {
+                src: row.get("src")?,
+                target_uri: row.get("target_uri")?,
+                val: row.get("val")?,
+            },
+            seq: row.get("seq")?,
+            create_timestamp: row.get("create_timestamp")?,
+            expiry_timestamp: row.get("expiry_timestamp")?,
+            neg: row.get("neg")?,
+            target_cid: row.get("target_cid")?,
+        })
+    }
+
+    pub fn fetch_by_key(
+        db: &Connection,
+        key: &LabelKey,
+        seq: i64,
+    ) -> Result<(Self, chrono::DateTime<chrono::Utc>)> {
+        let mut stmt = db.prepare_cached(
+            r#"
+            SELECT
+                src, target_uri, val,
+                seq, create_timestamp, expiry_timestamp,
+                neg, target_cid, last_seen_timestamp
+            FROM label_records
+            WHERE (src, target_uri, val, seq) = (?1, ?2, ?3, ?4);
+            "#,
+        )?;
+        Ok(
+            stmt.query_row(params!(&key.src, &key.target_uri, &key.val, seq), |row| {
+                Ok((Self::from_row(row)?, row.get("last_seen_timestamp")?))
+            })?,
+        )
+    }
+
     pub fn is_expired(&self, now: &chrono::DateTime<chrono::Utc>) -> bool {
         let Some(exp) = &self.expiry_timestamp else {
             return false;
@@ -122,22 +159,13 @@ impl LabelRecord {
                 seq >= ?2 AND seq <= ?3
             "#,
         )?;
-        Ok(stmt
-            .query_map(params!(src, seq_range.start(), seq_range.end()), |row| {
-                Ok(Self {
-                    key: LabelKey {
-                        src: row.get(1)?,
-                        target_uri: row.get(2)?,
-                        val: row.get(3)?,
-                    },
-                    seq: row.get(4)?,
-                    create_timestamp: row.get(5)?,
-                    expiry_timestamp: row.get(6)?,
-                    neg: row.get(7)?,
-                    target_cid: row.get(8)?,
-                })
-            })?
-            .collect()?)
+        let result: Result<HashSet<_>, _> = stmt
+            .query_map(
+                params!(src, seq_range.start(), seq_range.end()),
+                Self::from_row,
+            )?
+            .collect();
+        Ok(result?)
     }
 
     pub fn insert(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
@@ -162,7 +190,13 @@ impl LabelRecord {
             &self.target_cid,
             now,
         ))
-        .map_err(|e| anyhow!("error inserting label record: {e}"))?;
+        .map_err(|e| {
+            if is_constraint_violation(&e) {
+                anyhow!("uh oh! conflicting label record already exists")
+            } else {
+                anyhow!("error inserting label record: {e}")
+            }
+        })?;
         Ok(())
     }
 
@@ -194,7 +228,20 @@ impl LabelRecord {
             &self.target_cid,
             now,
         ))
-        .map_err(|e| anyhow!("error upserting label record: {e}"))?;
+        .map_err(|e| {
+            if is_constraint_violation(&e) {
+                let Ok((conflicting_record, was_last_seen)) = Self::fetch_by_key(db, &self.key, self.seq) else {
+                    return anyhow!(e);
+                };
+                println!("ERROR: label record changed since it was last read!");
+                println!("previous label record was seen at: {was_last_seen}");
+                println!("previous label record: {conflicting_record:#?}");
+                println!("new label record: {self:#?}");
+                anyhow!("no support for inserting conflicting records at this time")
+            } else {
+                anyhow!("error upserting label record: {e}")
+            }
+        })?;
         Ok(())
     }
 }
@@ -215,10 +262,20 @@ pub fn witness_handle_did(db: &Connection, handle: &str, did: &str) -> Result<()
 pub fn seq_for_src(db: &Connection, src_did: &str) -> Result<i64> {
     let mut stmt = db.prepare_cached(
         r#"
-        SELECT coalesce(max(seq), 0)
+        SELECT coalesce(max(seq), 0) AS last_seq
         FROM label_records
         WHERE src = ?1;
         "#,
     )?;
-    Ok(stmt.query_row(params!(src_did), |row| row.get(1))?)
+    Ok(stmt.query_row(params!(src_did), |row| row.get("last_seq"))?)
+}
+
+fn is_constraint_violation(err: &rusqlite::Error) -> bool {
+    matches!(
+        err.sqlite_error(),
+        Some(&rusqlite::ffi::Error {
+            code: libsqlite3_sys::ErrorCode::ConstraintViolation,
+            ..
+        })
+    )
 }
