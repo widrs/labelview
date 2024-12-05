@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     ops::Deref,
+    rc::Rc,
     time::Duration,
 };
 use tokio::{select, time::sleep};
@@ -266,6 +267,8 @@ struct LabelStore {
     // set of old unexpired non-negative records which were missing from the stream and, if they are
     // not negated in a future seq later in the stream, would still be in effect.
     disappeared_old_records: HashMap<LabelKey, LabelRecord>,
+    // greatest create timestamp of a label we've seen this trip
+    latest_create_timestamp: Option<Rc<str>>,
 }
 
 impl LabelStore {
@@ -277,6 +280,7 @@ impl LabelStore {
             disappeared_negative_records: 0,
             last_seq: HashMap::new(),
             disappeared_old_records: HashMap::new(),
+            latest_create_timestamp: None,
         })
     }
 
@@ -308,7 +312,7 @@ impl LabelStore {
             .iter()
             .map(|label| &label.key.src)
             .unique()
-            .map(ToOwned::to_owned)
+            .cloned()
             .collect_vec();
         // process retreading logic for each labeler src did we know about
         for src in &batch_src_dids {
@@ -381,23 +385,99 @@ impl LabelStore {
         if retreading {
             // when retreading, we upsert. when there is a key collision and the entire record
             // matches, we update the last seen timestamp, otherwise we err
-            for label in labels {
+            for label in &labels {
                 label.upsert(&tx, &now)?;
             }
         } else {
             // when not retreading, we simply slam it all in there. any key collision will err
-            for label in labels {
+            for label in &labels {
                 label.insert(&tx, &now)?;
             }
         }
         tx.commit()?;
+
+        // keep track of the latest create timestamp
+        self.latest_create_timestamp = labels
+            .iter()
+            .map(|l| &l.create_timestamp)
+            .chain(&self.latest_create_timestamp)
+            .max()
+            .cloned();
+
         Ok(())
     }
 
     // TODO(widders): finalize with probably one last fetch to the last possible seq, reporting of
     //  disappeared records, etc
     fn finalize(self) -> Result<()> {
-        todo!()
+        let now = chrono::Utc::now();
+
+        println!();
+        println!("--------------------");
+        println!("--> UPDATE SUMMARY");
+        println!("--------------------");
+        println!();
+
+        if let Some(latest_created_at) = &self.latest_create_timestamp {
+            let ago = match chrono::DateTime::parse_from_rfc3339(latest_created_at)
+                .ok()
+                .and_then(|cts| (now - cts.to_utc()).to_std().ok())
+            {
+                Some(ago) => &format!("{} ago", humantime::format_duration(ago)),
+                None => "in the future :(",
+            };
+            println!(
+                "== --> last label update received was at {latest_created_at:?}, which is {ago}"
+            );
+        } else {
+            println!("== --> received no labels this time.");
+        }
+
+        match self.labeler_dids.len() {
+            0 => {}
+            1 => println!("OK --> got label records from exactly 1 labeler did (this is good)"),
+            2.. => println!(
+                "XX --> got label records from {} labeler dids from the same source (WEIRD!)",
+                self.labeler_dids.len(),
+            ),
+        }
+
+        println!("(info) --> all source dids:");
+        for did in self.labeler_dids.into_iter().sorted() {
+            println!("   {did}");
+        }
+        println!();
+
+        if !self.disappeared_old_records.is_empty() {
+            println!(
+                "XX --> some label records that were observed on prior runs were not seen this\
+                time and may otherwise have been taking effect, because no records that supercede \
+                them appeared! SUSPICIOUS"
+            );
+            for disappeared_record in self.disappeared_old_records {
+                println!("XX --> disappeared record: {disappeared_record:#?}");
+            }
+        }
+
+        if self.disappeared_negative_records > 0 {
+            println!(
+                "XX --> a total of {} negation records disappeared from the stream that were probably \
+                still taking effect by negating labels that have not expired! (these were fully \
+                logged up above.) SUSPICIOUS",
+                self.disappeared_negative_records,
+            );
+        }
+
+        if self.suspicious_new_records > 0 {
+            println!(
+                "XX --> a total of {} new records appeared in the stream that hadn't been seen in prior \
+                passes (logged up above). SUSPICIOUS",
+                self.suspicious_new_records,
+            );
+        }
+
+        println!("--------------------");
+        todo!("summarize")
     }
 }
 

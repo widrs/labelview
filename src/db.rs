@@ -1,7 +1,6 @@
 use anyhow::{anyhow, bail, Result};
-use humantime::format_duration;
 use rusqlite::params;
-use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathBuf};
+use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathBuf, rc::Rc};
 
 pub use rusqlite::Connection;
 
@@ -47,7 +46,7 @@ pub struct LabelKey {
 pub struct LabelRecord {
     pub key: LabelKey,
     pub seq: i64,
-    pub create_timestamp: String,
+    pub create_timestamp: Rc<str>,
     pub expiry_timestamp: Option<String>,
     pub neg: bool,
     pub target_cid: Option<String>,
@@ -88,7 +87,7 @@ impl LabelRecord {
                     },
                     target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
                     seq,
-                    create_timestamp: label.cts.as_str().to_owned(),
+                    create_timestamp: label.cts.as_str().into(),
                     expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
                     neg: label.neg.unwrap_or(false),
                 })
@@ -238,7 +237,7 @@ impl LabelRecord {
                 };
                 println!("ERROR: label record changed since it was last read!");
                 let ago = match (now.clone() - was_last_seen).to_std() {
-                    Ok(ago) => &format!("{} ago", format_duration(ago)),
+                    Ok(ago) => &format!("{} ago", humantime::format_duration(ago)),
                     Err(..) => "unfortunately this is in the future...",
                 };
                 println!("previous label record was seen at: {was_last_seen} ({ago})");
