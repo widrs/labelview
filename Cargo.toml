@@ -17,7 +17,7 @@ hickory-resolver = "0.24.1"
 itertools = "0.13.0"
 libsqlite3-sys = { version = "0.28.0", features = ["bundled"] } # TODO(widders): custom bundle
 refinery = { version = "0.8.14", features = ["rusqlite"] }
-reqwest = { version = "0.12.9", default-features = false, features = ["brotli", "http2", "rustls-tls-webpki-roots", "zstd"] }
+reqwest = { version = "0.12.9", default-features = false, features = ["brotli", "http2", "rustls-tls-native-roots", "zstd"] }
 rusqlite = { version = "0.31.0", features = ["chrono", "modern_sqlite", "rusqlite-macros"] }
 rustls = { version = "0.23.19", default-features = false, features = ["ring"] }
 serde = { version = "1.0.215", features = ["derive"] }
