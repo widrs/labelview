@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Result};
+use humantime::format_duration;
 use rusqlite::params;
 use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathBuf};
 
@@ -230,11 +231,17 @@ impl LabelRecord {
         ))
         .map_err(|e| {
             if is_constraint_violation(&e) {
-                let Ok((conflicting_record, was_last_seen)) = Self::fetch_by_key(db, &self.key, self.seq) else {
+                let Ok((conflicting_record, was_last_seen)) =
+                    Self::fetch_by_key(db, &self.key, self.seq)
+                else {
                     return anyhow!(e);
                 };
                 println!("ERROR: label record changed since it was last read!");
-                println!("previous label record was seen at: {was_last_seen}");
+                let ago = match (now.clone() - was_last_seen).to_std() {
+                    Ok(ago) => &format!("{} ago", format_duration(ago)),
+                    Err(..) => "unfortunately this is in the future...",
+                };
+                println!("previous label record was seen at: {was_last_seen} ({ago})");
                 println!("previous label record: {conflicting_record:#?}");
                 println!("new label record: {self:#?}");
                 anyhow!("no support for inserting conflicting records at this time")
