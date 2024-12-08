@@ -182,9 +182,9 @@ impl LabelRecord {
             INSERT INTO label_records(
                 src, target_uri, val, seq,
                 create_timestamp, expiry_timestamp, neg,
-                target_cid, last_seen_timestamp
+                target_cid, import_id, last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
             "#,
         )?;
         stmt.execute(params!(
@@ -196,6 +196,7 @@ impl LabelRecord {
             &self.expiry_timestamp,
             &self.neg,
             &self.target_cid,
+            import_id,
             now,
         ))
         .map_err(|e| {
@@ -216,13 +217,13 @@ impl LabelRecord {
             INSERT INTO label_records(
                 src, target_uri, val, seq,
                 create_timestamp, expiry_timestamp, neg,
-                target_cid, last_seen_timestamp
+                target_cid, import_id, last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT (src, val, target_uri, seq)
                 WHERE (create_timestamp, expiry_timestamp, neg, target_cid) IS
                     (?5, ?6, ?7, ?8)
-                DO UPDATE SET last_seen_timestamp = ?9;
+                DO UPDATE SET last_seen_timestamp = ?10;
             "#,
         )?;
         stmt.execute(params!(
@@ -234,6 +235,7 @@ impl LabelRecord {
             &self.expiry_timestamp,
             &self.neg,
             &self.target_cid,
+            import_id,
             now,
         ))
         .map_err(|e| {
@@ -282,6 +284,17 @@ pub fn seq_for_src(db: &Connection, src_did: &str) -> Result<i64> {
         "#,
     )?;
     Ok(stmt.query_row(params!(src_did), |row| row.get("last_seq"))?)
+}
+
+pub fn begin_import(db: &Connection, now: DateTime) -> Result<i64> {
+    let mut stmt = db.prepare_cached(
+        r#"
+        INSERT INTO imports(start_time)
+        VALUES (?1)
+        RETURNING id;
+        "#,
+    )?;
+    Ok(stmt.query_row(params!(now), |row| row.get("id"))?)
 }
 
 fn is_constraint_violation(err: &rusqlite::Error) -> bool {

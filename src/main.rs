@@ -256,6 +256,8 @@ async fn conditional_sleep(t: Option<tokio::time::Sleep>) -> Option<()> {
 
 struct LabelStore {
     store: db::Connection,
+    /// the unique id for this run of the program and its associated rows
+    import_id: i64,
     /// set of all src dids we have seen from the labeler stream so far
     labeler_dids: HashSet<String>,
     /// count of newly added records found during a retread
@@ -264,17 +266,20 @@ struct LabelStore {
     disappeared_negative_records: usize,
     /// last seq seen for each label src
     last_seq: HashMap<String, i64>,
-    // set of old unexpired non-negative records which were missing from the stream and, if they are
-    // not negated in a future seq later in the stream, would still be in effect.
+    /// set of old unexpired non-negative records which were missing from the stream and, if they
+    /// are not negated in a future seq later in the stream, would still be in effect.
     disappeared_old_records: HashMap<LabelKey, LabelRecord>,
-    // greatest create timestamp of a label we've seen this trip
+    /// greatest create timestamp of a label we've seen this trip
     latest_create_timestamp: Option<Rc<str>>,
 }
 
 impl LabelStore {
     fn new() -> Result<Self> {
+        let store = db::connect()?;
+        let import_id = db::begin_import(&store, now())?;
         Ok(Self {
-            store: db::connect()?,
+            store,
+            import_id,
             labeler_dids: HashSet::new(),
             suspicious_new_records: 0,
             disappeared_negative_records: 0,
@@ -386,12 +391,12 @@ impl LabelStore {
             // when retreading, we upsert. when there is a key collision and the entire record
             // matches, we update the last seen timestamp, otherwise we err
             for label in &labels {
-                label.upsert(&tx, &now)?;
+                label.upsert(&tx, self.import_id, &now)?;
             }
         } else {
             // when not retreading, we simply slam it all in there. any key collision will err
             for label in &labels {
-                label.insert(&tx, &now)?;
+                label.insert(&tx, self.import_id, &now)?;
             }
         }
         tx.commit()?;
