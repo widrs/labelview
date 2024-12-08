@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS label_records_incoming
 CREATE TABLE IF NOT EXISTS suspicious_records(
     id INTEGER PRIMARY KEY,
     import_id INTEGER NOT NULL,
-    seen_timestamp TEXT NOT NULL,
+    suspicion_timestamp TEXT NOT NULL,
     problem_category TEXT NOT NULL,
     src TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS suspicious_records(
     neg BOOL NOT NULL,
     target_uri TEXT NOT NULL,
     target_cid TEXT,
-    val TEXT NOT NULL
+    val TEXT NOT NULL,
+    original_import_id INTEGER,
+    original_last_seen_timestamp TEXT
 );
 CREATE INDEX IF NOT EXISTS suspicious_records_by_import
     ON suspicious_records(import_id, problem_category);
