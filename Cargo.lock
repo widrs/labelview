@@ -1738,6 +1738,7 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "rusqlite-macros",
+ "serde_json",
  "smallvec",
 ]
 

@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS imports(
     id INTEGER PRIMARY KEY,
-    start_time TEXT NOT NULL
+    start_time TEXT NOT NULL,
+    program_args TEXT JSON NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS label_records(

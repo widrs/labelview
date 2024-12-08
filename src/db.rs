@@ -287,14 +287,16 @@ pub fn seq_for_src(db: &Connection, src_did: &str) -> Result<i64> {
 }
 
 pub fn begin_import(db: &Connection, now: DateTime) -> Result<i64> {
+    let program_args =
+        serde_json::Value::Array(std::env::args().map(serde_json::Value::String).collect());
     let mut stmt = db.prepare_cached(
         r#"
-        INSERT INTO imports(start_time)
-        VALUES (?1)
+        INSERT INTO imports(start_time, program_args)
+        VALUES (?1, ?2)
         RETURNING id;
         "#,
     )?;
-    Ok(stmt.query_row(params!(now), |row| row.get("id"))?)
+    Ok(stmt.query_row(params!(now, program_args), |row| row.get("id"))?)
 }
 
 fn is_constraint_violation(err: &rusqlite::Error) -> bool {
