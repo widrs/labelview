@@ -423,6 +423,8 @@ impl LabelStore {
         println!("--------------------");
         println!();
 
+        // TODO(widders): count labels gotten, positive and negative
+
         if let Some(latest_created_at) = &self.latest_create_timestamp {
             let ago =
                 match parse_datetime(latest_created_at).and_then(|cts| (now - cts).to_std().ok()) {
