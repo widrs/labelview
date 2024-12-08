@@ -1,4 +1,4 @@
-use crate::db::{get_data_dir, LabelKey, LabelRecord};
+use crate::db::{get_data_dir, now, parse_datetime, DateTime, LabelKey, LabelRecord};
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
@@ -215,7 +215,7 @@ impl GetCmd {
                     println!("text message: {text:?}")
                 }
                 Message::Binary(bin) => {
-                    let now = chrono::Utc::now();
+                    let now = now();
                     let mut bin = bin.as_slice();
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
@@ -296,7 +296,7 @@ impl LabelStore {
     fn process_labels(
         &mut self,
         labels: Vec<LabelRecord>,
-        now: chrono::DateTime<chrono::Utc>,
+        now: DateTime,
         retreading: bool,
     ) -> Result<()> {
         let batch_seq = if let Some(label) = labels.first() {
@@ -410,7 +410,7 @@ impl LabelStore {
     // TODO(widders): finalize with probably one last fetch to the last possible seq, reporting of
     //  disappeared records, etc
     fn finalize(self) -> Result<()> {
-        let now = chrono::Utc::now();
+        let now = now();
 
         println!();
         println!("--------------------");
@@ -419,13 +419,11 @@ impl LabelStore {
         println!();
 
         if let Some(latest_created_at) = &self.latest_create_timestamp {
-            let ago = match chrono::DateTime::parse_from_rfc3339(latest_created_at)
-                .ok()
-                .and_then(|cts| (now - cts.to_utc()).to_std().ok())
-            {
-                Some(ago) => &format!("{} ago", humantime::format_duration(ago)),
-                None => "in the future :(",
-            };
+            let ago =
+                match parse_datetime(latest_created_at).and_then(|cts| (now - cts).to_std().ok()) {
+                    Some(ago) => &format!("{} ago", humantime::format_duration(ago)),
+                    None => "in the future :(",
+                };
             println!(
                 "== --> last label update received was at {latest_created_at:?}, which is {ago}"
             );

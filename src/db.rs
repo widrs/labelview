@@ -4,6 +4,18 @@ use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathB
 
 pub use rusqlite::Connection;
 
+pub type DateTime = chrono::DateTime<chrono::Utc>;
+
+pub fn now() -> DateTime {
+    chrono::Utc::now()
+}
+
+pub fn parse_datetime(s: &str) -> Option<DateTime> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.to_utc())
+}
+
 mod embedded {
     refinery::embed_migrations!("migrations");
 }
@@ -110,11 +122,7 @@ impl LabelRecord {
         })
     }
 
-    pub fn fetch_by_key(
-        db: &Connection,
-        key: &LabelKey,
-        seq: i64,
-    ) -> Result<(Self, chrono::DateTime<chrono::Utc>)> {
+    pub fn fetch_by_key(db: &Connection, key: &LabelKey, seq: i64) -> Result<(Self, DateTime)> {
         let mut stmt = db.prepare_cached(
             r#"
             SELECT
@@ -132,11 +140,11 @@ impl LabelRecord {
         )
     }
 
-    pub fn is_expired(&self, now: &chrono::DateTime<chrono::Utc>) -> bool {
+    pub fn is_expired(&self, now: &DateTime) -> bool {
         let Some(exp) = &self.expiry_timestamp else {
             return false;
         };
-        let Ok(exp) = chrono::DateTime::parse_from_rfc3339(exp) else {
+        let Some(exp) = parse_datetime(exp) else {
             return false;
         };
         exp > *now
@@ -168,7 +176,7 @@ impl LabelRecord {
         Ok(result?)
     }
 
-    pub fn insert(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+    pub fn insert(&self, db: &Connection, import_id: i64, now: &DateTime) -> Result<()> {
         let mut stmt = db.prepare_cached(
             r#"
             INSERT INTO label_records(
@@ -202,7 +210,7 @@ impl LabelRecord {
 
     // upsert, updating the last seen timestamp of records that already exactly exist instead of
     // failing
-    pub fn upsert(&self, db: &Connection, now: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+    pub fn upsert(&self, db: &Connection, import_id: i64, now: &DateTime) -> Result<()> {
         let mut stmt = db.prepare_cached(
             r#"
             INSERT INTO label_records(
@@ -260,7 +268,7 @@ pub fn witness_handle_did(db: &Connection, handle: &str, did: &str) -> Result<()
         VALUES (?1, ?2, ?3);
         "#,
     )?;
-    stmt.execute(params!(handle, did, chrono::Utc::now()))?;
+    stmt.execute(params!(handle, did, now()))?;
     Ok(())
 }
 
