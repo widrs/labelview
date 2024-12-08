@@ -455,7 +455,7 @@ impl LabelStore {
 
         if !self.disappeared_old_records.is_empty() {
             println!(
-                "XX --> some label records that were observed on prior runs were not seen this\
+                "XX --> some label records that were observed on prior runs were not seen this \
                 time and may otherwise have been taking effect, because no records that supercede \
                 them appeared! SUSPICIOUS"
             );
@@ -466,17 +466,17 @@ impl LabelStore {
 
         if self.disappeared_negative_records > 0 {
             println!(
-                "XX --> a total of {} negation records disappeared from the stream that were probably \
-                still taking effect by negating labels that have not expired! (these were fully \
-                logged up above.) SUSPICIOUS",
+                "XX --> a total of {} negation records disappeared from the stream that were \
+                probably still taking effect by negating labels that have not expired! (these were \
+                fully logged up above.) SUSPICIOUS",
                 self.disappeared_negative_records,
             );
         }
 
         if self.suspicious_new_records > 0 {
             println!(
-                "XX --> a total of {} new records appeared in the stream that hadn't been seen in prior \
-                passes (logged up above). SUSPICIOUS",
+                "XX --> a total of {} new records appeared in the stream that hadn't been seen in \
+                prior passes (logged up above). SUSPICIOUS",
                 self.suspicious_new_records,
             );
         }
