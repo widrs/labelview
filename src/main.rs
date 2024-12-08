@@ -352,6 +352,7 @@ impl LabelStore {
                         continue;
                     }
                     if !known_old_labels.remove(label) {
+                        // TODO(widders): insert suspicious record
                         println!(
                             "WARNING -- NEW label record appeared in label stream: {label:#?}"
                         );
@@ -371,6 +372,7 @@ impl LabelStore {
                                 self.disappeared_old_records.remove(&disappeared.key);
                             }
                             _ => {
+                                // TODO(widders): insert suspicious record
                                 println!(
                                     "WARNING -- negation record disappeared from label stream: \
                                     {disappeared:#?}"
@@ -387,6 +389,11 @@ impl LabelStore {
             }
         }
         let tx = self.store.transaction()?;
+        // TODO(widders): insert we can let fail here, but upsert when it *collides* should instead
+        //  insert a suspicious record. what's the best way to do that? should we keep a suspicious
+        //  entry for the new record, or copy out the old record with its original import_id, or
+        //  what? ideally we need to make sure that if we use sqlite to optimistically insert it
+        //  must be in a mode that doesn't kill the whole tx
         if retreading {
             // when retreading, we upsert. when there is a key collision and the entire record
             // matches, we update the last seen timestamp, otherwise we err
