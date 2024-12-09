@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use rusqlite::params;
+use rusqlite::named_params;
 use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathBuf, rc::Rc};
 
 pub use rusqlite::Connection;
@@ -130,14 +130,18 @@ impl LabelRecord {
                 seq, create_timestamp, expiry_timestamp,
                 neg, target_cid, last_seen_timestamp
             FROM label_records
-            WHERE (src, target_uri, val, seq) = (?1, ?2, ?3, ?4);
+            WHERE (src, target_uri, val, seq) = (:src, :uri, :val, :seq);
             "#,
         )?;
-        Ok(
-            stmt.query_row(params!(&key.src, &key.target_uri, &key.val, seq), |row| {
-                Ok((Self::from_row(row)?, row.get("last_seen_timestamp")?))
-            })?,
-        )
+        Ok(stmt.query_row(
+            named_params!(
+                ":src": &key.src,
+                ":uri": &key.target_uri,
+                ":val": &key.val,
+                ":seq": seq,
+            ),
+            |row| Ok((Self::from_row(row)?, row.get("last_seen_timestamp")?)),
+        )?)
     }
 
     pub fn is_expired(&self, now: &DateTime) -> bool {
@@ -163,13 +167,17 @@ impl LabelRecord {
                 neg, target_cid
             FROM label_records
             WHERE
-                src = ?1 AND
-                seq >= ?2 AND seq <= ?3
+                src = :src AND
+                seq >= :seq_start AND seq <= :seq_end
             "#,
         )?;
         let result: Result<HashSet<_>, _> = stmt
             .query_map(
-                params!(src, seq_range.start(), seq_range.end()),
+                named_params!(
+                    ":src": src,
+                    ":seq_start": seq_range.start(),
+                    ":seq_end": seq_range.end(),
+                ),
                 Self::from_row,
             )?
             .collect();
@@ -184,20 +192,24 @@ impl LabelRecord {
                 create_timestamp, expiry_timestamp, neg,
                 target_cid, import_id, last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
+            VALUES (
+                :src, :uri, :val, :seq,
+                :cts, :exp, :neg,
+                :cid, :import_id, :last_seen
+            );
             "#,
         )?;
-        stmt.execute(params!(
-            &self.key.src,
-            &self.key.val,
-            &self.key.target_uri,
-            &self.seq,
-            &self.create_timestamp,
-            &self.expiry_timestamp,
-            &self.neg,
-            &self.target_cid,
-            import_id,
-            now,
+        stmt.execute(named_params!(
+            ":src": &self.key.src,
+            ":uri": &self.key.target_uri,
+            ":val": &self.key.val,
+            ":seq": &self.seq,
+            ":cts": &self.create_timestamp,
+            ":exp": &self.expiry_timestamp,
+            ":neg": &self.neg,
+            ":cid": &self.target_cid,
+            ":import_id": import_id,
+            ":last_seen": now,
         ))
         .map_err(|e| {
             if is_constraint_violation(&e) {
@@ -219,24 +231,30 @@ impl LabelRecord {
                 create_timestamp, expiry_timestamp, neg,
                 target_cid, import_id, last_seen_timestamp
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (
+                :src, :uri, :val, :seq,
+                :cts, :exp, :neg,
+                :cid, :import_id, :last_seen
+            )
             ON CONFLICT (src, val, target_uri, seq)
                 WHERE (create_timestamp, expiry_timestamp, neg, target_cid) IS
-                    (?5, ?6, ?7, ?8)
-                DO UPDATE SET last_seen_timestamp = ?10;
+                    (:cts, :exp, :neg, :cid)
+                DO UPDATE SET
+                    import_id = :import_id,
+                    last_seen_timestamp = :last_seen;
             "#,
         )?;
-        stmt.execute(params!(
-            &self.key.src,
-            &self.key.val,
-            &self.key.target_uri,
-            &self.seq,
-            &self.create_timestamp,
-            &self.expiry_timestamp,
-            &self.neg,
-            &self.target_cid,
-            import_id,
-            now,
+        stmt.execute(named_params!(
+            ":src": &self.key.src,
+            ":uri": &self.key.target_uri,
+            ":val": &self.key.val,
+            ":seq": &self.seq,
+            ":cts": &self.create_timestamp,
+            ":exp": &self.expiry_timestamp,
+            ":neg": &self.neg,
+            ":cid": &self.target_cid,
+            ":import_id": import_id,
+            ":last_seen": now,
         ))
         .map_err(|e| {
             if is_constraint_violation(&e) {
@@ -260,6 +278,45 @@ impl LabelRecord {
         })?;
         Ok(())
     }
+
+    pub fn suspicious(
+        &self,
+        db: &Connection,
+        problem: &str,
+        import_id: i64,
+        now: &DateTime,
+    ) -> Result<()> {
+        let mut stmt = db.prepare_cached(
+            r#"
+            INSERT INTO suspicious_records(
+                import_id, suspicion_timestamp, problem_category,
+                src, target_uri, val, seq,
+                create_timestamp, expiry_timestamp, neg,
+                target_cid
+            )
+            VALUES (
+                :import_id, :sus_time, :problem,
+                :src, :uri, :val, :seq,
+                :cts, :exp, :neg,
+                :cid,
+            );
+            "#,
+        )?;
+        stmt.execute(named_params!(
+            ":import_id": import_id,
+            ":sus_time": now,
+            ":problem": problem,
+            ":src": &self.key.src,
+            ":uri": &self.key.target_uri,
+            ":val": &self.key.val,
+            ":seq": &self.seq,
+            ":cts": &self.create_timestamp,
+            ":exp": &self.expiry_timestamp,
+            ":neg": &self.neg,
+            ":cid": &self.target_cid,
+        ))?;
+        Ok(())
+    }
 }
 
 /// Record the association between a handle and a did
@@ -267,10 +324,14 @@ pub fn witness_handle_did(db: &Connection, handle: &str, did: &str) -> Result<()
     let mut stmt = db.prepare_cached(
         r#"
         INSERT OR REPLACE INTO known_handles(did, handle, witnessed_timestamp)
-        VALUES (?1, ?2, ?3);
+        VALUES (:did, :handle, :witness_time);
         "#,
     )?;
-    stmt.execute(params!(handle, did, now()))?;
+    stmt.execute(named_params!(
+        ":did": handle,
+        ":handle": did,
+        ":witness_time": now(),
+    ))?;
     Ok(())
 }
 
@@ -280,10 +341,15 @@ pub fn seq_for_src(db: &Connection, src_did: &str) -> Result<i64> {
         r#"
         SELECT coalesce(max(seq), 0) AS last_seq
         FROM label_records
-        WHERE src = ?1;
+        WHERE src = :src;
         "#,
     )?;
-    Ok(stmt.query_row(params!(src_did), |row| row.get("last_seq"))?)
+    Ok(stmt.query_row(
+        named_params!(
+            ":src": src_did,
+        ),
+        |row| row.get("last_seq"),
+    )?)
 }
 
 pub fn begin_import(db: &Connection, now: DateTime) -> Result<i64> {
@@ -292,11 +358,17 @@ pub fn begin_import(db: &Connection, now: DateTime) -> Result<i64> {
     let mut stmt = db.prepare_cached(
         r#"
         INSERT INTO imports(start_time, program_args)
-        VALUES (?1, ?2)
+        VALUES (:start_time, :args)
         RETURNING id;
         "#,
     )?;
-    Ok(stmt.query_row(params!(now, program_args), |row| row.get("id"))?)
+    Ok(stmt.query_row(
+        named_params!(
+            ":start_time": now,
+            ":args": program_args,
+        ),
+        |row| row.get("id"),
+    )?)
 }
 
 fn is_constraint_violation(err: &rusqlite::Error) -> bool {
