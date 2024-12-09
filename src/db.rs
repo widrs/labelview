@@ -293,7 +293,7 @@ impl LabelRecord {
                 :import_id, :sus_time, :problem,
                 :src, :uri, :val, :seq,
                 :cts, :exp, :neg,
-                :cid,
+                :cid
             );
             "#,
         )?;
@@ -312,8 +312,48 @@ impl LabelRecord {
         ))?;
         Ok(())
     }
+}
 
-    // TODO(widders): copy old row to suspicious_records by db key
+impl LabelDbKey {
+    /// copy an existing record
+    pub fn suspicious_from_old_record(
+        &self,
+        db: &Connection,
+        problem: &str,
+        import_id: i64,
+        now: &DateTime,
+    ) -> Result<bool> {
+        let mut stmt = db.prepare_cached(
+            r#"
+            INSERT INTO suspicious_records(
+                import_id, suspicion_timestamp, problem_category,
+                src, target_uri, val, seq,
+                create_timestamp, expiry_timestamp, neg,
+                target_cid, original_import_id, original_last_seen_timestamp
+            )
+            SELECT
+                :import_id, :sus_time, :problem,
+                src, target_uri, val, seq,
+                create_timestamp, expiry_timestamp, neg,
+                target_cid, import_id, last_seen_timestamp
+            FROM label_records
+            WHERE (src, target_uri, val, seq) = (:src, :uri, :val, :seq);
+            "#,
+        )?;
+        let inserted = stmt.execute(named_params!(
+            ":import_id": import_id,
+            ":sus_time": now,
+            ":problem": problem,
+            ":src": &self.key.src,
+            ":uri": &self.key.target_uri,
+            ":val": &self.key.val,
+            ":seq": &self.seq,
+        ))?;
+        if inserted > 1 {
+            bail!("found more than 1 label record by a single key :(")
+        }
+        Ok(inserted == 1)
+    }
 }
 
 /// Record the association between a handle and a did
