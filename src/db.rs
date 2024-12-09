@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use rusqlite::named_params;
-use std::{borrow::Borrow, collections::HashSet, ops::RangeInclusive, path::PathBuf, rc::Rc};
+use std::{borrow::Borrow, ops::RangeInclusive, path::PathBuf, rc::Rc};
 
 pub use rusqlite::Connection;
 
@@ -62,7 +62,7 @@ pub struct LabelDbKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LabelRecord {
-    pub key: LabelDbKey,
+    pub dbkey: LabelDbKey,
     pub create_timestamp: Rc<str>,
     pub expiry_timestamp: Option<String>,
     pub neg: bool,
@@ -71,13 +71,13 @@ pub struct LabelRecord {
 
 impl Borrow<LabelDbKey> for LabelRecord {
     fn borrow(&self) -> &LabelDbKey {
-        &self.key
+        &self.dbkey
     }
 }
 
 impl Borrow<LabelKey> for LabelRecord {
     fn borrow(&self) -> &LabelKey {
-        &self.key.key
+        &self.dbkey.key
     }
 }
 
@@ -103,7 +103,7 @@ impl LabelRecord {
                 }
                 // TODO(widders): can we check the signature? do we know how
                 Ok(Self {
-                    key: LabelDbKey {
+                    dbkey: LabelDbKey {
                         key: LabelKey {
                             src: label.src.to_string(),
                             target_uri: label.uri,
@@ -122,7 +122,7 @@ impl LabelRecord {
 
     fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
         Ok(Self {
-            key: LabelDbKey {
+            dbkey: LabelDbKey {
                 key: LabelKey {
                     src: row.get("src")?,
                     target_uri: row.get("target_uri")?,
@@ -173,7 +173,7 @@ impl LabelRecord {
         db: &Connection,
         src: &str,
         seq_range: RangeInclusive<i64>,
-    ) -> Result<HashSet<Self>> {
+    ) -> Result<Vec<Self>> {
         let mut stmt = db.prepare_cached(
             r#"
             SELECT
@@ -186,7 +186,7 @@ impl LabelRecord {
                 seq >= :seq_start AND seq <= :seq_end
             "#,
         )?;
-        let result: Result<HashSet<_>, _> = stmt
+        let result: Result<Vec<_>, _> = stmt
             .query_map(
                 named_params!(
                     ":src": src,
@@ -218,10 +218,10 @@ impl LabelRecord {
         )?;
         Ok(
             match stmt.execute(named_params!(
-                ":src": &self.key.key.src,
-                ":uri": &self.key.key.target_uri,
-                ":val": &self.key.key.val,
-                ":seq": &self.key.seq,
+                ":src": &self.dbkey.key.src,
+                ":uri": &self.dbkey.key.target_uri,
+                ":val": &self.dbkey.key.val,
+                ":seq": &self.dbkey.seq,
                 ":cts": &self.create_timestamp,
                 ":exp": &self.expiry_timestamp,
                 ":neg": &self.neg,
@@ -257,10 +257,10 @@ impl LabelRecord {
             "#,
         )?;
         let updated = stmt.execute(named_params!(
-            ":src": &self.key.key.src,
-            ":uri": &self.key.key.target_uri,
-            ":val": &self.key.key.val,
-            ":seq": &self.key.seq,
+            ":src": &self.dbkey.key.src,
+            ":uri": &self.dbkey.key.target_uri,
+            ":val": &self.dbkey.key.val,
+            ":seq": &self.dbkey.seq,
             ":cts": &self.create_timestamp,
             ":exp": &self.expiry_timestamp,
             ":neg": &self.neg,
@@ -301,10 +301,10 @@ impl LabelRecord {
             ":import_id": import_id,
             ":sus_time": now,
             ":problem": problem,
-            ":src": &self.key.key.src,
-            ":uri": &self.key.key.target_uri,
-            ":val": &self.key.key.val,
-            ":seq": &self.key.seq,
+            ":src": &self.dbkey.key.src,
+            ":uri": &self.dbkey.key.target_uri,
+            ":val": &self.dbkey.key.val,
+            ":seq": &self.dbkey.seq,
             ":cts": &self.create_timestamp,
             ":exp": &self.expiry_timestamp,
             ":neg": &self.neg,

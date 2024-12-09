@@ -306,7 +306,7 @@ impl LabelStore {
         retreading: bool,
     ) -> Result<()> {
         let batch_seq = if let Some(label) = labels.first() {
-            label.key.seq
+            label.dbkey.seq
         } else {
             return Ok(());
         };
@@ -321,12 +321,12 @@ impl LabelStore {
         // should always be the did that we probably looked up to find it. however, we didn't
         // necessarily look up the labeler, and there's actually nothing about the data that
         // enforces that it couldn't be wildly admixed.
-        let batch_src_dids = labels
+        let batch_src_dids: Vec<String> = labels
             .iter()
-            .map(|label| &label.key.key.src)
+            .map(|label| &label.dbkey.key.src)
             .unique()
             .cloned()
-            .collect_vec();
+            .collect();
         // old label records to be copied out as suspicious record entries
         let mut suspicious_old_records: Vec<(LabelDbKey, &str)> = vec![];
         // label records to be recorded as first seen this time, paired with the problem string
@@ -335,8 +335,8 @@ impl LabelStore {
         let mut update_labels: Vec<LabelRecord> = vec![];
         // label records to be inserted
         let mut insert_labels: Vec<LabelRecord> = vec![];
-        // reindex the remaining (disappeared) records by their database key
-        let mut indexed_disappeared: HashMap<LabelDbKey, LabelRecord> = Default::default();
+        // indexes the old records by their database key
+        let mut indexed_old_records: HashMap<LabelDbKey, LabelRecord> = Default::default();
 
         // process retreading logic for each labeler src did we know about, one src at a time.
         // usually this will mean everything in a single pass
@@ -365,39 +365,78 @@ impl LabelStore {
                         0..=batch_seq
                     }
                 };
-                let mut known_old_labels = LabelRecord::load_known_range(&self, src, seq_range)?;
-                // subtract the received labels in this seq from that range, matching only exactly
-                for label in &labels {
-                    if &label.key.key.src != src {
-                        continue;
-                    }
-                    if !known_old_labels.remove(label) {
-                        // TODO(widders): we had a former maximum seq that we knew about, we should
-                        //  just do pure inserts for anything after that (but we can still modulate
-                        //  our disappeared record checking)
-                        suspicious_new_records.push((label.clone(), "new"));
-                        self.suspicious_new_records += 1; // TODO(widders): update this stat later
-                    }
-                    if label.neg {
-                        self.disappeared_old_records.remove(label.borrow());
-                    }
-                }
-                indexed_disappeared.extend(
-                    known_old_labels
+                indexed_old_records.extend(
+                    LabelRecord::load_known_range(&self, src, seq_range)?
                         .into_iter()
-                        .map(|disappeared| (disappeared.key.clone(), disappeared)),
+                        .map(|disappeared| (disappeared.dbkey.clone(), disappeared)),
                 );
             }
         }
+
+        // we want to cover these scenarios:
+        //
+        // 1. seq is greater than we expect to see from any old records
+        //  * all records will be inserted
+        // 2. a new and old record exist for the same db key, and match exactly
+        //  * the record will be updated only to bump its last seen
+        // 3. a new and old record exist for the same db key, but they differ
+        //  * the old record should get a suspicious entry as "replaced"
+        //  * the new record gets a suspicious entry as "replacing"
+        //  * the record will be updated
+        // 4. a new record exists but an old one does not
+        //  * the new record gets a suspicious entry as "new"
+        //  * the new record will be inserted
+        // 5. an old record exists but a new one does not
+        //  5a. ...and the old record, or the record it was negating, were expired
+        //    * no action, does not count as disappeared
+        //  5b. ...and the old record, or the record it was negating, were NOT expired
+        //    * add the old record to self.disappeared_old_records
+        //    * if by the end of the update it has not been matched, emit a suspicious entry as
+        //      "disappeared-while-effective"
+        //    * TODO(widders): maybe we always sus negatives disappearing, as they are never
+        //       supposed to move according to the docs
+        //
+        // regardless of the above logic, all new & old records seen should continue to modulate the
+        // record in self.disappeared_old_records to mark what has been superceded in the current
+        // view.
+        //
+        // we don't need to cover these scenarios:
+        //
+        // 1. new labels don't have unique keys. unclear what we do with this for now, maybe we will
+        //    just keep the last of each in the seq, but it's not even very clear from the docs
+        //    whether you're supposed to be able to emit successive positive records to update the
+        //    fine details of a label without negating it, either.
+
         for new_label in labels {
-            if let Some(old_colliding) = indexed_disappeared.get(new_label.borrow()) {
-                suspicious_old_records.push((old_colliding.key.clone(), "replaced"));
+            // subtract the received labels in this seq from the old labels
+            match indexed_old_records.remove(new_label.borrow()) {
+                Some(mismatched_old_label) if mismatched_old_label != new_label => {
+                // TODO(widders): we had a former maximum seq that we knew about, we should
+                //  just do pure inserts for anything after that (but we can still modulate
+                //  our disappeared record checking)
+                suspicious_new_records.push((new_label.clone(), "new"));
+                self.suspicious_new_records += 1; // TODO(widders): update this stat later
+            }
+                Some(old_label) => {
+                    // TODO(widders): case 2
+                }
+                None => {
+                    // TODO(widders): case 4
+                }
+            }
+            /*
+            if new_label.neg {
+                self.disappeared_old_records.remove(new_label.borrow());
+            }
+            if let Some(old_colliding) = indexed_old_records.get(new_label.borrow()) {
+                suspicious_old_records.push((old_colliding.dbkey.clone(), "replaced"));
                 update_labels.push(new_label)
             } else {
             }
+             */
         }
         // catalog all the old label records that we didn't see again this time
-        for disappeared in indexed_disappeared.into_values() {
+        for disappeared in indexed_old_records.into_values() {
             if disappeared.neg {
                 match self.disappeared_old_records.get(disappeared.borrow()) {
                     Some(positive) if positive.is_expired(&now) => {
@@ -407,14 +446,14 @@ impl LabelStore {
                     }
                     _ => {
                         suspicious_old_records
-                            .push((disappeared.key.clone(), "disappeared-while-effective"));
+                            .push((disappeared.dbkey.clone(), "disappeared-while-effective"));
                         self.disappeared_negative_records += 1;
                     }
                 }
             } else {
                 // positive records all go into the disappeared log
                 self.disappeared_old_records
-                    .insert(disappeared.key.key.clone(), disappeared);
+                    .insert(disappeared.dbkey.key.clone(), disappeared);
             }
         }
 
