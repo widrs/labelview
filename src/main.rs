@@ -327,15 +327,19 @@ impl LabelStore {
             .unique()
             .cloned()
             .collect_vec();
-        // label records to be copied out as suspiciously replaced old records
-        let mut suspicious_replaced_records: Vec<LabelDbKey> = vec![];
+        // old label records to be copied out as suspicious record entries
+        let mut suspicious_old_records: Vec<(LabelDbKey, &str)> = vec![];
         // label records to be recorded as first seen this time, paired with the problem string
         let mut suspicious_new_records: Vec<(LabelRecord, &str)> = vec![];
         // label records to be updated in place
         let mut update_labels: Vec<LabelRecord> = vec![];
         // label records to be inserted
         let mut insert_labels: Vec<LabelRecord> = vec![];
-        // process retreading logic for each labeler src did we know about
+        // reindex the remaining (disappeared) records by their database key
+        let mut indexed_disappeared: HashMap<LabelDbKey, LabelRecord> = Default::default();
+
+        // process retreading logic for each labeler src did we know about, one src at a time.
+        // usually this will mean everything in a single pass
         for src in &batch_src_dids {
             if !self.labeler_dids.contains(src) {
                 // if labeler_dids is already empty, it's probably because we went directly to the
@@ -368,6 +372,9 @@ impl LabelStore {
                         continue;
                     }
                     if !known_old_labels.remove(label) {
+                        // TODO(widders): we had a former maximum seq that we knew about, we should
+                        //  just do pure inserts for anything after that (but we can still modulate
+                        //  our disappeared record checking)
                         suspicious_new_records.push((label.clone(), "new"));
                         self.suspicious_new_records += 1; // TODO(widders): update this stat later
                     }
@@ -375,66 +382,55 @@ impl LabelStore {
                         self.disappeared_old_records.remove(label.borrow());
                     }
                 }
-                // reindex the remaining (disappeared) records by their database key
-                let indexed_disappeared: HashMap<LabelDbKey, LabelRecord> = known_old_labels
-                    .into_iter()
-                    .map(|disappeared| (disappeared.key.clone(), disappeared))
-                    .collect();
-                for new_label in labels {
-                    if let Some(old_colliding) = indexed_disappeared.get(new_label.borrow()) {
-                        suspicious_replaced_records.push(old_colliding.key.clone());
-                        update_labels.push(new_label)
-                    }
-                }
-                // catalog all the old label records that we didn't see again this time
-                for disappeared in indexed_disappeared.values() {
-                    if disappeared.neg {
-                        match self.disappeared_old_records.get(disappeared.borrow()) {
-                            Some(positive) if positive.is_expired(&now) => {
-                                // the negation record disappeared, but the record it was negating
-                                // was expired
-                                self.disappeared_old_records.remove(disappeared.borrow());
-                            }
-                            _ => {
-                                // TODO(widders): insert suspicious record
-                                println!(
-                                    "WARNING -- negation record disappeared from label stream: \
-                                    {disappeared:#?}"
-                                );
-                                self.disappeared_negative_records += 1;
-                            }
-                        }
-                    } else {
-                        // positive records all go into the disappeared log
-                        self.disappeared_old_records
-                            .insert(disappeared.key.key.clone(), disappeared.clone());
-                    }
-                }
+                indexed_disappeared.extend(
+                    known_old_labels
+                        .into_iter()
+                        .map(|disappeared| (disappeared.key.clone(), disappeared)),
+                );
             }
         }
+        for new_label in labels {
+            if let Some(old_colliding) = indexed_disappeared.get(new_label.borrow()) {
+                suspicious_old_records.push((old_colliding.key.clone(), "replaced"));
+                update_labels.push(new_label)
+            } else {
+            }
+        }
+        // catalog all the old label records that we didn't see again this time
+        for disappeared in indexed_disappeared.into_values() {
+            if disappeared.neg {
+                match self.disappeared_old_records.get(disappeared.borrow()) {
+                    Some(positive) if positive.is_expired(&now) => {
+                        // the negation record disappeared, but the record it was negating
+                        // was expired
+                        self.disappeared_old_records.remove(disappeared.borrow());
+                    }
+                    _ => {
+                        suspicious_old_records
+                            .push((disappeared.key.clone(), "disappeared-while-effective"));
+                        self.disappeared_negative_records += 1;
+                    }
+                }
+            } else {
+                // positive records all go into the disappeared log
+                self.disappeared_old_records
+                    .insert(disappeared.key.key.clone(), disappeared);
+            }
+        }
+
+        // write all the updates for this batch in one transaction
         let tx = self.store.transaction()?;
-        // TODO(widders): insert we can let fail here, but upsert when it *collides* should instead
-        //  insert a suspicious record. what's the best way to do that? should we keep a suspicious
-        //  entry for the new record, or copy out the old record with its original import_id, or
-        //  what? ideally we need to make sure that if we use sqlite to optimistically insert it
-        //  must be in a mode that doesn't kill the whole tx
-        if retreading {
-            // when retreading, we upsert. when there is a key collision and the entire record
-            // matches, we update the last seen timestamp, otherwise we err
-            for label in &labels {
-                // TODO(widders): different now. fetch, reconcile, then either update or insert.
-                //  for that matter, we fetched these already earlier up above, and should know
-                //  which of these are "new" and need reconciling, and which of them are just going
-                //  to be clean upserts that only update the import_id and last_seen; we just need
-                //  to organize that better
-                label.upsert(&tx, self.import_id, &now)?;
-            }
-        } else {
-            // when not retreading, we simply slam it all in there. any key collision will err
-            for label in insert_labels {
-                // TODO(widders): handle collision (false returned here)
-                label.insert(&tx, self.import_id, &now)?;
-            }
+        for (label_db_id, problem) in suspicious_old_records {
+            label_db_id.suspicious_from_old_record(&tx, problem, self.import_id, &now)?;
+        }
+        for (new_record, problem) in suspicious_new_records {
+            new_record.suspicious(&tx, problem, self.import_id, &now)?
+        }
+        for update_label in update_labels {
+            update_label.update(&tx, self.import_id, &now)?;
+        }
+        for insert_label in insert_labels {
+            insert_label.insert(&tx, self.import_id, &now)?;
         }
         tx.commit()?;
 
