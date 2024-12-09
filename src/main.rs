@@ -1,10 +1,11 @@
-use crate::db::{get_data_dir, now, parse_datetime, DateTime, LabelKey, LabelRecord};
+use crate::db::{get_data_dir, now, parse_datetime, DateTime, LabelDbKey, LabelKey, LabelRecord};
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use serde::Deserialize;
 use std::{
+    borrow::Borrow,
     collections::{hash_map::Entry, HashMap, HashSet},
     ops::Deref,
     rc::Rc,
@@ -305,20 +306,35 @@ impl LabelStore {
         retreading: bool,
     ) -> Result<()> {
         let batch_seq = if let Some(label) = labels.first() {
-            label.seq
+            label.key.seq
         } else {
             return Ok(());
         };
+        // keep track of the latest create timestamp
+        self.latest_create_timestamp = labels
+            .iter()
+            .map(|l| &l.create_timestamp)
+            .chain(&self.latest_create_timestamp)
+            .max()
+            .cloned();
         // most of the time we expect labelers to only output records from a single did, which
         // should always be the did that we probably looked up to find it. however, we didn't
         // necessarily look up the labeler, and there's actually nothing about the data that
         // enforces that it couldn't be wildly admixed.
         let batch_src_dids = labels
             .iter()
-            .map(|label| &label.key.src)
+            .map(|label| &label.key.key.src)
             .unique()
             .cloned()
             .collect_vec();
+        // label records to be copied out as suspiciously replaced old records
+        let mut suspicious_replaced_records: Vec<LabelDbKey> = vec![];
+        // label records to be recorded as first seen this time, paired with the problem string
+        let mut suspicious_new_records: Vec<(LabelRecord, &str)> = vec![];
+        // label records to be updated in place
+        let mut update_labels: Vec<LabelRecord> = vec![];
+        // label records to be inserted
+        let mut insert_labels: Vec<LabelRecord> = vec![];
         // process retreading logic for each labeler src did we know about
         for src in &batch_src_dids {
             if !self.labeler_dids.contains(src) {
@@ -346,30 +362,38 @@ impl LabelStore {
                     }
                 };
                 let mut known_old_labels = LabelRecord::load_known_range(&self, src, seq_range)?;
-                // subtract the received labels in this seq from that range
+                // subtract the received labels in this seq from that range, matching only exactly
                 for label in &labels {
-                    if &label.key.src != src {
+                    if &label.key.key.src != src {
                         continue;
                     }
                     if !known_old_labels.remove(label) {
-                        // TODO(widders): insert suspicious record
-                        println!(
-                            "WARNING -- NEW label record appeared in label stream: {label:#?}"
-                        );
-                        self.suspicious_new_records += 1;
+                        suspicious_new_records.push((label.clone(), "new"));
+                        self.suspicious_new_records += 1; // TODO(widders): update this stat later
                     }
                     if label.neg {
-                        self.disappeared_old_records.remove(&label.key);
+                        self.disappeared_old_records.remove(label.borrow());
+                    }
+                }
+                // reindex the remaining (disappeared) records by their database key
+                let indexed_disappeared: HashMap<LabelDbKey, LabelRecord> = known_old_labels
+                    .into_iter()
+                    .map(|disappeared| (disappeared.key.clone(), disappeared))
+                    .collect();
+                for new_label in labels {
+                    if let Some(old_colliding) = indexed_disappeared.get(new_label.borrow()) {
+                        suspicious_replaced_records.push(old_colliding.key.clone());
+                        update_labels.push(new_label)
                     }
                 }
                 // catalog all the old label records that we didn't see again this time
-                for disappeared in known_old_labels {
+                for disappeared in indexed_disappeared.values() {
                     if disappeared.neg {
-                        match self.disappeared_old_records.get(&disappeared.key) {
+                        match self.disappeared_old_records.get(disappeared.borrow()) {
                             Some(positive) if positive.is_expired(&now) => {
                                 // the negation record disappeared, but the record it was negating
                                 // was expired
-                                self.disappeared_old_records.remove(&disappeared.key);
+                                self.disappeared_old_records.remove(disappeared.borrow());
                             }
                             _ => {
                                 // TODO(widders): insert suspicious record
@@ -383,7 +407,7 @@ impl LabelStore {
                     } else {
                         // positive records all go into the disappeared log
                         self.disappeared_old_records
-                            .insert(disappeared.key.clone(), disappeared);
+                            .insert(disappeared.key.key.clone(), disappeared.clone());
                     }
                 }
             }
@@ -407,20 +431,12 @@ impl LabelStore {
             }
         } else {
             // when not retreading, we simply slam it all in there. any key collision will err
-            for label in &labels {
+            for label in insert_labels {
                 // TODO(widders): handle collision (false returned here)
                 label.insert(&tx, self.import_id, &now)?;
             }
         }
         tx.commit()?;
-
-        // keep track of the latest create timestamp
-        self.latest_create_timestamp = labels
-            .iter()
-            .map(|l| &l.create_timestamp)
-            .chain(&self.latest_create_timestamp)
-            .max()
-            .cloned();
 
         Ok(())
     }

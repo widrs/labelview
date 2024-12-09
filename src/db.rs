@@ -54,19 +54,30 @@ pub struct LabelKey {
     pub val: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct LabelRecord {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LabelDbKey {
     pub key: LabelKey,
     pub seq: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LabelRecord {
+    pub key: LabelDbKey,
     pub create_timestamp: Rc<str>,
     pub expiry_timestamp: Option<String>,
     pub neg: bool,
     pub target_cid: Option<String>,
 }
 
+impl Borrow<LabelDbKey> for LabelRecord {
+    fn borrow(&self) -> &LabelDbKey {
+        &self.key
+    }
+}
+
 impl Borrow<LabelKey> for LabelRecord {
     fn borrow(&self) -> &LabelKey {
-        &self.key
+        &self.key.key
     }
 }
 
@@ -92,13 +103,15 @@ impl LabelRecord {
                 }
                 // TODO(widders): can we check the signature? do we know how
                 Ok(Self {
-                    key: LabelKey {
-                        src: label.src.to_string(),
-                        target_uri: label.uri,
-                        val: label.val,
+                    key: LabelDbKey {
+                        key: LabelKey {
+                            src: label.src.to_string(),
+                            target_uri: label.uri,
+                            val: label.val,
+                        },
+                        seq,
                     },
                     target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
-                    seq,
                     create_timestamp: label.cts.as_str().into(),
                     expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
                     neg: label.neg.unwrap_or(false),
@@ -109,12 +122,14 @@ impl LabelRecord {
 
     fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
         Ok(Self {
-            key: LabelKey {
-                src: row.get("src")?,
-                target_uri: row.get("target_uri")?,
-                val: row.get("val")?,
+            key: LabelDbKey {
+                key: LabelKey {
+                    src: row.get("src")?,
+                    target_uri: row.get("target_uri")?,
+                    val: row.get("val")?,
+                },
+                seq: row.get("seq")?,
             },
-            seq: row.get("seq")?,
             create_timestamp: row.get("create_timestamp")?,
             expiry_timestamp: row.get("expiry_timestamp")?,
             neg: row.get("neg")?,
@@ -201,27 +216,29 @@ impl LabelRecord {
             );
             "#,
         )?;
-        Ok(match stmt.execute(named_params!(
-            ":src": &self.key.src,
-            ":uri": &self.key.target_uri,
-            ":val": &self.key.val,
-            ":seq": &self.seq,
-            ":cts": &self.create_timestamp,
-            ":exp": &self.expiry_timestamp,
-            ":neg": &self.neg,
-            ":cid": &self.target_cid,
-            ":import_id": import_id,
-            ":last_seen": now,
-        )) {
-            Ok(..) => true,
-            Err(e) => {
-                if is_constraint_violation(&e) {
-                    false
-                } else {
-                    bail!("error inserting label record: {e}");
+        Ok(
+            match stmt.execute(named_params!(
+                ":src": &self.key.key.src,
+                ":uri": &self.key.key.target_uri,
+                ":val": &self.key.key.val,
+                ":seq": &self.key.seq,
+                ":cts": &self.create_timestamp,
+                ":exp": &self.expiry_timestamp,
+                ":neg": &self.neg,
+                ":cid": &self.target_cid,
+                ":import_id": import_id,
+                ":last_seen": now,
+            )) {
+                Ok(..) => true,
+                Err(e) => {
+                    if is_constraint_violation(&e) {
+                        false
+                    } else {
+                        bail!("error inserting label record: {e}");
+                    }
                 }
-            }
-        })
+            },
+        )
     }
 
     // update a label record by its key the last seen timestamp of records that already exactly exist instead of
@@ -240,10 +257,10 @@ impl LabelRecord {
             "#,
         )?;
         let updated = stmt.execute(named_params!(
-            ":src": &self.key.src,
-            ":uri": &self.key.target_uri,
-            ":val": &self.key.val,
-            ":seq": &self.seq,
+            ":src": &self.key.key.src,
+            ":uri": &self.key.key.target_uri,
+            ":val": &self.key.key.val,
+            ":seq": &self.key.seq,
             ":cts": &self.create_timestamp,
             ":exp": &self.expiry_timestamp,
             ":neg": &self.neg,
@@ -284,10 +301,10 @@ impl LabelRecord {
             ":import_id": import_id,
             ":sus_time": now,
             ":problem": problem,
-            ":src": &self.key.src,
-            ":uri": &self.key.target_uri,
-            ":val": &self.key.val,
-            ":seq": &self.seq,
+            ":src": &self.key.key.src,
+            ":uri": &self.key.key.target_uri,
+            ":val": &self.key.key.val,
+            ":seq": &self.key.seq,
             ":cts": &self.create_timestamp,
             ":exp": &self.expiry_timestamp,
             ":neg": &self.neg,
@@ -295,6 +312,8 @@ impl LabelRecord {
         ))?;
         Ok(())
     }
+
+    // TODO(widders): copy old row to suspicious_records by db key
 }
 
 /// Record the association between a handle and a did
