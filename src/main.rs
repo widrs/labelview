@@ -398,11 +398,17 @@ impl LabelStore {
             // when retreading, we upsert. when there is a key collision and the entire record
             // matches, we update the last seen timestamp, otherwise we err
             for label in &labels {
+                // TODO(widders): different now. fetch, reconcile, then either update or insert.
+                //  for that matter, we fetched these already earlier up above, and should know
+                //  which of these are "new" and need reconciling, and which of them are just going
+                //  to be clean upserts that only update the import_id and last_seen; we just need
+                //  to organize that better
                 label.upsert(&tx, self.import_id, &now)?;
             }
         } else {
             // when not retreading, we simply slam it all in there. any key collision will err
             for label in &labels {
+                // TODO(widders): handle collision (false returned here)
                 label.insert(&tx, self.import_id, &now)?;
             }
         }

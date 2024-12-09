@@ -184,7 +184,9 @@ impl LabelRecord {
         Ok(result?)
     }
 
-    pub fn insert(&self, db: &Connection, import_id: i64, now: &DateTime) -> Result<()> {
+    /// tries to insert the record, returning true if it was inserted and false if there was a key
+    /// conflict
+    pub fn insert(&self, db: &Connection, import_id: i64, now: &DateTime) -> Result<bool> {
         let mut stmt = db.prepare_cached(
             r#"
             INSERT INTO label_records(
@@ -199,7 +201,7 @@ impl LabelRecord {
             );
             "#,
         )?;
-        stmt.execute(named_params!(
+        Ok(match stmt.execute(named_params!(
             ":src": &self.key.src,
             ":uri": &self.key.target_uri,
             ":val": &self.key.val,
@@ -210,41 +212,34 @@ impl LabelRecord {
             ":cid": &self.target_cid,
             ":import_id": import_id,
             ":last_seen": now,
-        ))
-        .map_err(|e| {
-            if is_constraint_violation(&e) {
-                anyhow!("uh oh! conflicting label record already exists")
-            } else {
-                anyhow!("error inserting label record: {e}")
+        )) {
+            Ok(..) => true,
+            Err(e) => {
+                if is_constraint_violation(&e) {
+                    false
+                } else {
+                    bail!("error inserting label record: {e}");
+                }
             }
-        })?;
-        Ok(())
+        })
     }
 
-    // upsert, updating the last seen timestamp of records that already exactly exist instead of
+    // update a label record by its key the last seen timestamp of records that already exactly exist instead of
     // failing
-    pub fn upsert(&self, db: &Connection, import_id: i64, now: &DateTime) -> Result<()> {
+    pub fn update(&self, db: &Connection, import_id: i64, now: &DateTime) -> Result<bool> {
         let mut stmt = db.prepare_cached(
             r#"
-            INSERT INTO label_records(
-                src, target_uri, val, seq,
-                create_timestamp, expiry_timestamp, neg,
-                target_cid, import_id, last_seen_timestamp
-            )
-            VALUES (
-                :src, :uri, :val, :seq,
-                :cts, :exp, :neg,
-                :cid, :import_id, :last_seen
-            )
-            ON CONFLICT (src, val, target_uri, seq)
-                WHERE (create_timestamp, expiry_timestamp, neg, target_cid) IS
-                    (:cts, :exp, :neg, :cid)
-                DO UPDATE SET
-                    import_id = :import_id,
-                    last_seen_timestamp = :last_seen;
+            UPDATE label_records SET
+                create_timestamp = :cts,
+                expiry_timestamp = :exp,
+                neg = :neg,
+                target_cid = :cid,
+                import_id = :import_id,
+                last_seen_timestamp = :last_seen
+            WHERE (src, target_uri, val, seq) = (:src, :uri, :val, :seq)
             "#,
         )?;
-        stmt.execute(named_params!(
+        let updated = stmt.execute(named_params!(
             ":src": &self.key.src,
             ":uri": &self.key.target_uri,
             ":val": &self.key.val,
@@ -255,28 +250,11 @@ impl LabelRecord {
             ":cid": &self.target_cid,
             ":import_id": import_id,
             ":last_seen": now,
-        ))
-        .map_err(|e| {
-            if is_constraint_violation(&e) {
-                let Ok((conflicting_record, was_last_seen)) =
-                    Self::fetch_by_key(db, &self.key, self.seq)
-                else {
-                    return anyhow!(e);
-                };
-                println!("ERROR: label record changed since it was last read!");
-                let ago = match (now.clone() - was_last_seen).to_std() {
-                    Ok(ago) => &format!("{} ago", humantime::format_duration(ago)),
-                    Err(..) => "unfortunately this is in the future...",
-                };
-                println!("previous label record was seen at: {was_last_seen} ({ago})");
-                println!("previous label record: {conflicting_record:#?}");
-                println!("new label record: {self:#?}");
-                anyhow!("no support for inserting conflicting records at this time")
-            } else {
-                anyhow!("error upserting label record: {e}")
-            }
-        })?;
-        Ok(())
+        ))?;
+        if updated > 1 {
+            bail!("more than 1 label record updated by a single key :(");
+        }
+        Ok(updated == 1)
     }
 
     pub fn suspicious(
