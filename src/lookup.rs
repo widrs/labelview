@@ -1,4 +1,4 @@
-use eyre::{bail, eyre, Result};
+use eyre::{bail, eyre as err, Result};
 
 pub use atrium_api::did_doc::DidDocument;
 
@@ -63,14 +63,14 @@ pub async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
                 .send()
                 .await
                 .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| eyre!("error fetching did from plc directory: {e}"))?;
+                .map_err(|e| err!("error fetching did from plc directory: {e}"))?;
             // parse the json response
             let content = response
                 .bytes()
                 .await
-                .map_err(|e| eyre!("error reading did from plc directory response: {e}"))?;
+                .map_err(|e| err!("error reading did from plc directory response: {e}"))?;
             serde_json::from_slice(&content)
-                .map_err(|e| eyre!("error parsing did document from plc directory: {e}"))?
+                .map_err(|e| err!("error parsing did document from plc directory: {e}"))?
         }
         Some(("web", domain)) => {
             let http_client = reqwest::Client::new();
@@ -79,24 +79,24 @@ pub async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
                 .send()
                 .await
                 .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| eyre!("error fetching did from .well-known: {e}"))?;
+                .map_err(|e| err!("error fetching did from .well-known: {e}"))?;
             // parse the json response
             let content = response
                 .bytes()
                 .await
-                .map_err(|e| eyre!("error reading did from .well-known response: {e}"))?;
+                .map_err(|e| err!("error reading did from .well-known response: {e}"))?;
             serde_json::from_slice(&content)
-                .map_err(|e| eyre!("error parsing did document from .well-known: {e}"))?
+                .map_err(|e| err!("error parsing did document from .well-known: {e}"))?
         }
         Some(_) => {
-            return Err(eyre!("unsupported did type"));
+            bail!("unsupported did type");
         }
         None => {
-            return Err(eyre!("not a did"));
+            bail!("not a did");
         }
     };
     if doc.id != did {
-        return Err(eyre!("the fetched did document didn't match the request"));
+        bail!("the fetched did document didn't match the request");
     }
     Ok(doc)
 }

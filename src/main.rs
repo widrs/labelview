@@ -1,5 +1,5 @@
 use crate::db::{get_data_dir, now, parse_datetime, DateTime, LabelDbKey, LabelKey, LabelRecord};
-use eyre::{bail, eyre, Result};
+use eyre::{bail, eyre as err, Result};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use itertools::Itertools;
@@ -108,7 +108,7 @@ impl GetCmd {
             message: Option<String>,
         }
         let header: Header = ciborium::from_reader(bin)
-            .map_err(|e| eyre!("error decoding event stream header: {e}"))?;
+            .map_err(|e| err!("error decoding event stream header: {e}"))?;
         if header.op != 1 {
             let error_1 = header.error.as_deref().unwrap_or("(no error type)");
             let error_2 = header.message.as_deref().unwrap_or("(no error message)");
@@ -169,7 +169,7 @@ impl GetCmd {
                 };
 
                 let labeler_url = Url::parse(&labeler)
-                    .map_err(|e| eyre!("could not parse labeler endpoint as url: {e}"))?;
+                    .map_err(|e| err!("could not parse labeler endpoint as url: {e}"))?;
                 let Some(labeler_domain) = labeler_url.domain() else {
                     bail!("labeler endpoint url does not seem to specify a domain");
                 };
@@ -211,7 +211,7 @@ impl GetCmd {
                 }
             }
 
-            match message.map_err(|e| eyre!("error reading websocket message: {e}"))? {
+            match message.map_err(|e| err!("error reading websocket message: {e}"))? {
                 Message::Text(text) => {
                     println!("text message: {text:?}")
                 }
@@ -227,7 +227,7 @@ impl GetCmd {
                     } else if ty == "#info" {
                         let info: atrium_api::com::atproto::label::subscribe_labels::Info =
                             ciborium::from_reader(&mut bin)
-                                .map_err(|e| eyre!("error parsing #info message: {e}"))?;
+                                .map_err(|e| err!("error parsing #info message: {e}"))?;
                         let name = &info.name;
                         let message = &info.message;
                         println!("info: {name:?}: {message:?}");
