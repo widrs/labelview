@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use eyre::{bail, eyre, Result};
 use rusqlite::named_params;
 use std::{borrow::Borrow, ops::RangeInclusive, path::PathBuf, rc::Rc};
 
@@ -24,26 +24,26 @@ mod embedded {
 pub fn get_data_dir() -> Result<PathBuf> {
     directories::ProjectDirs::from("", "", "labelview")
         .map(|dirs| dirs.data_dir().to_path_buf())
-        .ok_or(anyhow!("could not find data directory"))
+        .ok_or(eyre!("could not find data directory"))
 }
 
 /// Connects to the application's database
 pub fn connect() -> Result<Connection> {
     let data_dir = get_data_dir()?;
     std::fs::create_dir_all(&data_dir)
-        .map_err(|err| anyhow!("couldn't create data directory {data_dir:?}: {err}"))?;
+        .map_err(|err| eyre!("couldn't create data directory {data_dir:?}: {err}"))?;
     let mut db = Connection::open(data_dir.join("data.sqlite"))?;
     db.set_db_config(
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY,
         true,
     )?;
     db.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| anyhow!("error setting up db connection: {e}"))?;
+        .map_err(|e| eyre!("error setting up db connection: {e}"))?;
     db.pragma_update(None, "synchronous", "NORMAL")
-        .map_err(|e| anyhow!("error setting up db connection: {e}"))?;
+        .map_err(|e| eyre!("error setting up db connection: {e}"))?;
     embedded::migrations::runner()
         .run(&mut db)
-        .map_err(|e| anyhow!("error running db migrations: {e}"))?;
+        .map_err(|e| eyre!("error running db migrations: {e}"))?;
     Ok(db)
 }
 
@@ -86,7 +86,7 @@ impl LabelRecord {
     pub fn from_subscription_record(bin: &mut &[u8]) -> Result<Vec<Self>> {
         let labels: atrium_api::com::atproto::label::subscribe_labels::Labels =
             ciborium::from_reader(bin)
-                .map_err(|e| anyhow!("error decoding label record event stream body: {e}"))?;
+                .map_err(|e| eyre!("error decoding label record event stream body: {e}"))?;
         let seq = labels.seq;
         if !(1..i64::MAX).contains(&seq) {
             bail!("non-positive sequence number in label update: {seq}");
