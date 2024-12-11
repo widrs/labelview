@@ -1,12 +1,12 @@
 use crate::db::{get_data_dir, now, parse_datetime, DateTime, LabelDbKey, LabelKey, LabelRecord};
-use eyre::{bail, eyre as err, Result};
 use clap::{Args, Parser, Subcommand};
+use eyre::{bail, eyre as err, Result};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use serde::Deserialize;
 use std::{
     borrow::Borrow,
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     ops::Deref,
     rc::Rc,
     time::Duration,
@@ -259,8 +259,8 @@ struct LabelStore {
     store: db::Connection,
     /// the unique id for this run of the program and its associated rows
     import_id: i64,
-    /// set of all src dids we have seen from the labeler stream so far
-    labeler_dids: HashSet<String>,
+    /// set of all src dids we have seen from the labeler stream so far, paired with their prior seq
+    labeler_dids: HashMap<String, i64>,
     /// count of newly added records found during a retread
     suspicious_new_records: usize,
     /// count of negative records that have gone missing during a retread
@@ -281,7 +281,7 @@ impl LabelStore {
         Ok(Self {
             store,
             import_id,
-            labeler_dids: HashSet::new(),
+            labeler_dids: HashMap::new(),
             suspicious_new_records: 0,
             disappeared_negative_records: 0,
             last_seq: HashMap::new(),
@@ -295,7 +295,8 @@ impl LabelStore {
         if !self.labeler_dids.is_empty() {
             bail!("label store already knows of a labeler did");
         }
-        self.labeler_dids.insert(did);
+        let prior_seq = db::seq_for_src(self, &did)?;
+        self.labeler_dids.insert(did, prior_seq);
         Ok(())
     }
 
@@ -348,7 +349,8 @@ impl LabelStore {
                 if !self.labeler_dids.is_empty() {
                     println!("WARNING -- additional did appeared in label stream: {src}");
                 }
-                self.labeler_dids.insert(src.clone());
+                self.labeler_dids
+                    .insert(src.clone(), db::seq_for_src(self, src)?);
             }
             if retreading {
                 // fetch known old labels starting after the last received seq, up to and including
@@ -396,6 +398,7 @@ impl LabelStore {
         //    * TODO(widders): maybe we always sus negatives disappearing, as they are never
         //       supposed to move according to the docs
         //
+        // TODO(widders):
         // regardless of the above logic, all new & old records seen should continue to modulate the
         // record in self.disappeared_old_records to mark what has been superceded in the current
         // view.
@@ -408,32 +411,36 @@ impl LabelStore {
         //    fine details of a label without negating it, either.
 
         for new_label in labels {
+            // TODO(widders): we can validate that an old record is valid to have disappeared like
+            //  this, but we need to actually know that it should have been there first.
+            //  before we do this we need to add the indexed old records to disappeared old records,
+            //  and we may want to do that in seq order
+            // self.disappeared_old_records.remove(new_label.borrow());
+
+            if self.labeler_dids.get(&new_label.dbkey.key.src).unwrap() < &new_label.dbkey.seq {
+                // case 1
+                insert_labels.push(new_label);
+                continue;
+            }
             // subtract the received labels in this seq from the old labels
             match indexed_old_records.remove(new_label.borrow()) {
-                Some(mismatched_old_label) if mismatched_old_label != new_label => {
-                // TODO(widders): we had a former maximum seq that we knew about, we should
-                //  just do pure inserts for anything after that (but we can still modulate
-                //  our disappeared record checking)
-                suspicious_new_records.push((new_label.clone(), "new"));
-                self.suspicious_new_records += 1; // TODO(widders): update this stat later
-            }
-                Some(old_label) => {
-                    // TODO(widders): case 2
+                Some(old_label) if old_label == new_label => {
+                    // case 2
+                    update_labels.push(new_label);
+                }
+                Some(mismatched_old_label) => {
+                    // case 3
+                    suspicious_old_records.push((mismatched_old_label.dbkey, "replaced"));
+                    suspicious_new_records.push((new_label.clone(), "replacing"));
+                    update_labels.push(new_label);
+                    self.suspicious_new_records += 1; // TODO(widders): update this stat later
                 }
                 None => {
-                    // TODO(widders): case 4
+                    // case 4
+                    suspicious_new_records.push((new_label.clone(), "new"));
+                    insert_labels.push(new_label);
                 }
             }
-            /*
-            if new_label.neg {
-                self.disappeared_old_records.remove(new_label.borrow());
-            }
-            if let Some(old_colliding) = indexed_old_records.get(new_label.borrow()) {
-                suspicious_old_records.push((old_colliding.dbkey.clone(), "replaced"));
-                update_labels.push(new_label)
-            } else {
-            }
-             */
         }
         // catalog all the old label records that we didn't see again this time
         for disappeared in indexed_old_records.into_values() {
@@ -512,7 +519,7 @@ impl LabelStore {
         }
 
         println!("(info) --> all source dids:");
-        for did in self.labeler_dids.into_iter().sorted() {
+        for (did, _) in self.labeler_dids.into_iter().sorted() {
             println!("   {did}");
         }
         println!();
