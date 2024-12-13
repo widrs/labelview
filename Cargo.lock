@@ -1134,10 +1134,8 @@ dependencies = [
  "hickory-resolver",
  "humantime",
  "itertools",
- "libsqlite3-sys",
  "reqwest",
  "rusqlite",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
@@ -1627,7 +1625,6 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "rusqlite-macros",
- "serde_json",
  "smallvec",
 ]
 
