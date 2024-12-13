@@ -38,6 +38,7 @@ pub fn connect(path: &Path) -> Result<Connection> {
             expiry_timestamp TEXT,
             neg BOOL NOT NULL,
             target_cid TEXT,
+            sig BLOB,
             seen_at_timestamp TEXT NOT NULL
         );
         "#,
@@ -139,12 +140,12 @@ impl LabelRecord {
             INSERT INTO label_records(
                 src, target_uri, val, seq,
                 create_timestamp, expiry_timestamp, neg,
-                target_cid, last_seen_timestamp
+                target_cid, sig, seen_at_timestamp
             )
             VALUES (
                 :src, :uri, :val, :seq,
                 :cts, :exp, :neg,
-                :cid, :last_seen
+                :cid, :sig, :last_seen
             );
             "#,
         )?;
@@ -157,6 +158,7 @@ impl LabelRecord {
             ":exp": &self.expiry_timestamp,
             ":neg": &self.neg,
             ":cid": &self.target_cid,
+            ":sig": &self.sig,
             ":last_seen": now,
         ))?;
         Ok(())
