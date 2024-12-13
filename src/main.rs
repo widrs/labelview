@@ -1,10 +1,11 @@
+use crate::db::{now, parse_datetime, Connection, DateTime, LabelKey, LabelRecord};
 use clap::{Args, Parser};
 use eyre::{bail, eyre as err, Result};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::{
-    borrow::Borrow,
     collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
     time::Duration,
@@ -13,103 +14,8 @@ use tokio::{select, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
+mod db;
 mod lookup;
-
-pub type DateTime = chrono::DateTime<chrono::Utc>;
-
-pub fn now() -> DateTime {
-    chrono::Utc::now()
-}
-
-pub fn parse_datetime(s: &str) -> Option<DateTime> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.to_utc())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LabelKey {
-    pub src: Rc<str>,
-    pub target_uri: Rc<str>,
-    pub val: Rc<str>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LabelDbKey {
-    pub key: LabelKey,
-    pub seq: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct LabelRecord {
-    pub dbkey: LabelDbKey,
-    pub create_timestamp: Rc<str>,
-    pub expiry_timestamp: Option<String>,
-    pub neg: bool,
-    pub target_cid: Option<String>,
-}
-
-impl Borrow<LabelDbKey> for LabelRecord {
-    fn borrow(&self) -> &LabelDbKey {
-        &self.dbkey
-    }
-}
-
-impl Borrow<LabelKey> for LabelRecord {
-    fn borrow(&self) -> &LabelKey {
-        &self.dbkey.key
-    }
-}
-
-impl LabelRecord {
-    /// https://atproto.com/specs/label#schema-and-data-model
-    pub fn from_subscription_record(bin: &mut &[u8]) -> Result<Vec<Self>> {
-        let labels: atrium_api::com::atproto::label::subscribe_labels::Labels =
-            ciborium::from_reader(bin)
-                .map_err(|e| err!("error decoding label record event stream body: {e}"))?;
-        let seq = labels.seq;
-        if !(1..i64::MAX).contains(&seq) {
-            bail!("non-positive sequence number in label update: {seq}");
-        }
-        labels
-            .data
-            .labels
-            .into_iter()
-            .map(|label| {
-                let label = label.data;
-                if label.ver != Some(1) {
-                    let ver = label.ver;
-                    bail!("unsupported or missing label record version {ver:?}");
-                }
-                // TODO(widders): can we check the signature? do we know how
-                Ok(Self {
-                    dbkey: LabelDbKey {
-                        key: LabelKey {
-                            src: label.src.to_string().into(),
-                            target_uri: label.uri.into(),
-                            val: label.val.into(),
-                        },
-                        seq,
-                    },
-                    target_cid: label.cid.map(|cid| cid.as_ref().to_string()),
-                    create_timestamp: label.cts.as_str().into(),
-                    expiry_timestamp: label.exp.map(|exp| exp.as_str().to_owned()),
-                    neg: label.neg.unwrap_or(false),
-                })
-            })
-            .collect()
-    }
-
-    pub fn is_expired(&self, now: &DateTime) -> bool {
-        let Some(exp) = &self.expiry_timestamp else {
-            return false;
-        };
-        let Some(exp) = parse_datetime(exp) else {
-            return false;
-        };
-        exp > *now
-    }
-}
 
 #[derive(Debug, Parser)]
 enum GetCmd {
@@ -125,6 +31,12 @@ struct GetCommonArgs {
     /// seconds. Non-positive values wait forever
     #[arg(long, default_value = "5")]
     stream_timeout: f64,
+    /// Save all records read from the labeler into the specified Sqlite file.
+    ///
+    /// A table named "label_records" will be created and the data inserted into it, plus the time
+    /// that it is received from the labeling service.
+    #[arg(long)]
+    save_to_db: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -220,6 +132,10 @@ impl GetCmd {
             }
         };
 
+        if let Some(db_path) = common_args.save_to_db {
+            store.store = Some(db::connect(&db_path)?);
+        }
+
         let address = Url::parse(&format!(
             "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
         ))?;
@@ -253,13 +169,14 @@ impl GetCmd {
                     println!("text message: {text:?}")
                 }
                 Message::Binary(bin) => {
+                    let now = now();
                     let mut bin = bin.as_slice();
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
                     let ty = Self::header_type(&mut bin)?;
                     if ty == "#labels" {
                         let labels = LabelRecord::from_subscription_record(&mut bin)?;
-                        store.process_labels(labels)?;
+                        store.process_labels(labels, &now)?;
                     } else if ty == "#info" {
                         let info: atrium_api::com::atproto::label::subscribe_labels::Info =
                             ciborium::from_reader(&mut bin)
@@ -292,6 +209,8 @@ async fn conditional_sleep(t: Option<tokio::time::Sleep>) -> Option<()> {
 }
 
 struct LabelStore {
+    /// database we are saving labels into
+    store: Option<Connection>,
     /// set of all src dids we have seen from the labeler stream so far, paired with their prior seq
     labeler_dids: HashSet<Rc<str>>,
     /// tracked effective labels
@@ -303,6 +222,7 @@ struct LabelStore {
 impl LabelStore {
     fn new() -> Result<Self> {
         Ok(Self {
+            store: None,
             effective: HashMap::new(),
             labeler_dids: HashSet::new(),
             latest_create_timestamp: None,
@@ -318,8 +238,8 @@ impl LabelStore {
         Ok(())
     }
 
-    fn process_labels(&mut self, labels: Vec<LabelRecord>) -> Result<()> {
-        for label in labels {
+    fn process_labels(&mut self, labels: Vec<LabelRecord>, now: &DateTime) -> Result<()> {
+        for mut label in labels {
             if !self.labeler_dids.contains(&label.dbkey.key.src) {
                 self.labeler_dids.insert(label.dbkey.key.src.clone());
             }
@@ -329,6 +249,14 @@ impl LabelStore {
                 self.latest_create_timestamp = Some(label.create_timestamp.clone());
             }
 
+            if let Some(store) = &self.store {
+                label.insert(store, now)?;
+            }
+
+            // discard the signature data after it's been stored in the db, we no longer need it by
+            // this point
+            label.sig = None;
+
             // TODO(widders): make sure the label we're effecting over has an older create timestamp
             self.effective.insert(label.dbkey.key.clone(), label);
         }
@@ -336,8 +264,6 @@ impl LabelStore {
         Ok(())
     }
 
-    // TODO(widders): finalize with probably one last fetch to the last possible seq, reporting of
-    //  disappeared records, etc
     fn finalize(self) -> Result<()> {
         let now = now();
 
@@ -346,8 +272,6 @@ impl LabelStore {
         println!("--> UPDATE SUMMARY");
         println!("--------------------");
         println!();
-
-        // TODO(widders): count labels gotten, positive and negative
 
         if let Some(latest_created_at) = &self.latest_create_timestamp {
             let ago =
