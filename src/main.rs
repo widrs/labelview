@@ -5,7 +5,7 @@ use itertools::Itertools;
 use serde::Deserialize;
 use std::{
     borrow::Borrow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
     time::Duration,
 };
@@ -329,6 +329,7 @@ impl LabelStore {
                 self.latest_create_timestamp = Some(label.create_timestamp.clone());
             }
 
+            // TODO(widders): make sure the label we're effecting over has an older create timestamp
             self.effective.insert(label.dbkey.key.clone(), label);
         }
 
@@ -377,7 +378,74 @@ impl LabelStore {
         println!();
 
         println!("--------------------");
-        todo!("summarize")
+
+        let global_labels: HashSet<_> = [
+            "!hide",
+            "!warn",
+            "porn",
+            "sexual",
+            "graphic-media",
+            "nudity",
+        ]
+        .into_iter()
+        .collect();
+
+        let mut effective_counts = BTreeMap::<_, usize>::new();
+        for (
+            LabelKey {
+                src,
+                val,
+                target_uri,
+            },
+            label,
+        ) in self.effective
+        {
+            if !label.neg && !label.is_expired(&now) {
+                *effective_counts
+                    .entry((
+                        src.clone(),
+                        val.clone(),
+                        TargetKind::from_target_uri(&target_uri),
+                    ))
+                    .or_default() += 1;
+            }
+        }
+
+        for ((src, val, target_kind), count) in effective_counts {
+            let global_tag = if global_labels.contains(val.as_ref()) {
+                " (global)"
+            } else {
+                ""
+            };
+            println!("{src} labels {count:>8} x: {val:?}{global_tag} -> {target_kind:?}");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum TargetKind {
+    Account,
+    Record { kind: String },
+    Unknown,
+}
+
+impl TargetKind {
+    fn from_target_uri(uri: &str) -> Self {
+        if let Some(rest) = uri.strip_prefix("at://") {
+            let mut split = rest.split('/');
+            if let (Some(_did), Some(middle)) = (split.next(), split.next()) {
+                Self::Record {
+                    kind: middle.to_owned(),
+                }
+            } else {
+                Self::Unknown
+            }
+        } else {
+            // assume it's a did
+            Self::Account
+        }
     }
 }
 
