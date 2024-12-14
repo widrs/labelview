@@ -8,6 +8,60 @@ currently the application reads all labels every time, and will summarize the
 counts of currently-effective labels applied by the labeler at the end. the
 labels can optionally be written to a sqlite database as well.
 
+## example usage
+
+```
+$ labelview lookup asukafield.xyz
+looking up did...
+looking up did via dns TXT...
+reading did document from plc directory...
+
+handle: asukafield.xyz
+did:    did:plc:4ugewi6aca52a62u62jccbl7
+
+pds:     https://maitake.us-west.host.bsky.network
+labeler: https://ozone.asukafield.xyz
+
+streaming from labeler service
+label subscription stream slowed and crawled; terminating
+
+--------------------
+--> UPDATE SUMMARY
+--------------------
+
+received a total of 20851 label record(s)
+
+== --> last label update received was at "2024-12-14T09:08:29.870Z", which is 13m 23s 153ms 445us 357ns ago
+OK --> got label records from exactly 1 labeler did (this is good)
+(info) --> all source dids:
+   did:plc:4ugewi6aca52a62u62jccbl7
+
+--------------------
+labeler defined 18872 effective label(s)
+--------------------
+did:plc:4ugewi6aca52a62u62jccbl7 labels       60 x: "!hide" (global) -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels     3142 x: "!warn" (global) -> Account
+did:plc:4ugewi6aca52a62u62jccbl7 labels        3 x: "!warn" (global) -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels        1 x: "Transphobia" -> Account
+did:plc:4ugewi6aca52a62u62jccbl7 labels        1 x: "Transphobia" -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels      744 x: "enbyphobia" -> Account
+did:plc:4ugewi6aca52a62u62jccbl7 labels        1 x: "enbyphobia" -> Record { kind: "app.bsky.actor.profile" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels      193 x: "enbyphobia" -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels        1 x: "enbyphobia" -> Record { kind: "app.bsky.graph.list" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels        1 x: "misgendering" -> Account
+did:plc:4ugewi6aca52a62u62jccbl7 labels      229 x: "misgendering" -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels     2063 x: "transmisogyny" -> Account
+did:plc:4ugewi6aca52a62u62jccbl7 labels        2 x: "transmisogyny" -> Record { kind: "app.bsky.actor.profile" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels     1116 x: "transmisogyny" -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels       31 x: "transmisogyny" -> Record { kind: "app.bsky.graph.list" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels        2 x: "transmisogyny" -> Record { kind: "app.bsky.graph.starterpack" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels     9375 x: "transphobia" -> Account
+did:plc:4ugewi6aca52a62u62jccbl7 labels        5 x: "transphobia" -> Record { kind: "app.bsky.actor.profile" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels     1877 x: "transphobia" -> Record { kind: "app.bsky.feed.post" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels       24 x: "transphobia" -> Record { kind: "app.bsky.graph.list" }
+did:plc:4ugewi6aca52a62u62jccbl7 labels        1 x: "transphobia" -> Record { kind: "app.bsky.graph.starterpack" }
+```
+
 ## the reason for the tool
 
 bluesky moderation is, to put it mildly, a mess. composable moderation is a bad
@@ -27,6 +81,30 @@ afterthought:
   already a terrible idea.**
 
 [hidebug]: https://github.com/bluesky-social/atproto/issues/2367
+
+## caveats of this tool
+
+this tool is as-is. it may accept some data that's technically not 100%
+canonical for labelers. but if the state of things is any indication, it's
+probably stricter than most of the other systems that look at them.
+
+it makes no attempt to look at or validate the cryptographic signatures of the
+label records, though it does save them to sqlite when you use that mode. (the
+signatures are supposed to be signed via the labeler's `#atproto_label` key
+found under `verificationMethod`; see the [did standard][didstd].)
+
+[didstd]: https://www.w3.org/TR/did-core/#dfn-publickeymultibase
+
+you may notice it's also not licensed. you can use it. if you know how you
+should clone it, use [`rustup`][rustup] and `cargo` to build and run it, modify
+it, etc.; if you don't know how to do that, i built some versions of the binary
+for common operating systems in the [releases][releases] section, probably. you
+shouldn't have to trust me and just download random stuff like that, but if you
+do i promise i didn't do anything weird.
+
+[rustup]: https://rustup.rs/
+
+[releases]: https://github.com/widrs/labelview/releases
 
 ## sqlite output
 
@@ -93,10 +171,11 @@ where
     labels that you don't own and operate is to see those labels get applied.
 
 while working on the logic to persist previously seen labels and audit any seen
-changes from a labeler over multiple passes for suspicious changes the situation
-with bsky """trust & safety""" has rapidly deteriorated, and i have opted to
-instead release this tool as-is with simpler functionality. it still outputs the
-labels it reads, which you can analyze yourself if you desire.
+changes from a labeler over multiple passes for suspicious changes (which is,
+frankly, just a huge pain in the ass considering how messy the data can get) the
+situation with bsky """trust & safety""" has rapidly deteriorated, and i have
+opted to instead release this tool as-is with simpler functionality. it still
+outputs the labels it reads, which you can analyze yourself if you desire.
 
 there are even more problems than that:
 
