@@ -30,12 +30,12 @@ afterthought:
 
 ## sqlite output
 
-to get a [sqlite][sqlite] dump of the labels, simply provide the `--save-to-db` flag with
-a file name or path and the sqlite file at that path will be created or reused.
-a table named `label_records` will be created with the values of the label
-records and the timestamp that the records were received from the service. if
-there are already label records in the table from another export, more exports
-will just add more labels.
+to get a [sqlite][sqlite] dump of the labels, simply provide the `--save-to-db`
+flag with a file name or path and the sqlite file at that path will be created
+or reused. a table named `label_records` will be created with the values of the
+labelrecords and the timestamp that the records were received from the service.
+if there are already label records in the table from another export, more
+exports will just add more labels.
 
 [sqlite]: https://sqlite.org/
 
