@@ -267,7 +267,7 @@ impl LabelStore {
         Ok(())
     }
 
-    fn finalize(mut self) -> Result<()> {
+    fn finalize(self) -> Result<()> {
         let now = now();
 
         println!();
