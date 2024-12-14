@@ -213,6 +213,8 @@ struct LabelStore {
     store: Option<Connection>,
     /// set of all src dids we have seen from the labeler stream so far, paired with their prior seq
     labeler_dids: HashSet<Rc<str>>,
+    /// total labels read
+    total_labels: usize,
     /// tracked effective labels
     effective: HashMap<LabelKey, LabelRecord>,
     /// greatest create timestamp of a label we've seen this trip
@@ -223,6 +225,7 @@ impl LabelStore {
     fn new() -> Result<Self> {
         Ok(Self {
             store: None,
+            total_labels: 0,
             effective: HashMap::new(),
             labeler_dids: HashSet::new(),
             latest_create_timestamp: None,
@@ -239,6 +242,7 @@ impl LabelStore {
     }
 
     fn process_labels(&mut self, labels: Vec<LabelRecord>, now: &DateTime) -> Result<()> {
+        self.total_labels += labels.len();
         for mut label in labels {
             if !self.labeler_dids.contains(&label.dbkey.key.src) {
                 self.labeler_dids.insert(label.dbkey.key.src.clone());
@@ -260,17 +264,18 @@ impl LabelStore {
             // TODO(widders): make sure the label we're effecting over has an older create timestamp
             self.effective.insert(label.dbkey.key.clone(), label);
         }
-
         Ok(())
     }
 
-    fn finalize(self) -> Result<()> {
+    fn finalize(mut self) -> Result<()> {
         let now = now();
 
         println!();
         println!("--------------------");
         println!("--> UPDATE SUMMARY");
         println!("--------------------");
+        println!();
+        println!("received a total of {total} label record(s)", total = self.total_labels);
         println!();
 
         if let Some(latest_created_at) = &self.latest_create_timestamp {
@@ -315,6 +320,7 @@ impl LabelStore {
         .collect();
 
         let mut effective_counts = BTreeMap::<_, usize>::new();
+        let mut total_effective = 0usize;
         for (
             LabelKey {
                 src,
@@ -332,8 +338,12 @@ impl LabelStore {
                         TargetKind::from_target_uri(&target_uri),
                     ))
                     .or_default() += 1;
+                total_effective += 1;
             }
         }
+
+        println!("labeler defined {total_effective} effective label(s)");
+        println!("--------------------");
 
         for ((src, val, target_kind), count) in effective_counts {
             let global_tag = if global_labels.contains(val.as_ref()) {
