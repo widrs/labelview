@@ -4,9 +4,9 @@ use eyre::{bail, eyre as err, Result};
 use futures_util::StreamExt;
 use itertools::Itertools;
 use serde::Deserialize;
-use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    path::PathBuf,
     rc::Rc,
     time::Duration,
 };
