@@ -275,7 +275,10 @@ impl LabelStore {
         println!("--> UPDATE SUMMARY");
         println!("--------------------");
         println!();
-        println!("received a total of {total} label record(s)", total = self.total_labels);
+        println!(
+            "received a total of {total} label record(s)",
+            total = self.total_labels
+        );
         println!();
 
         if let Some(latest_created_at) = &self.latest_create_timestamp {
