@@ -196,7 +196,7 @@ impl GetCmd {
                 }
                 Message::Binary(bin) => {
                     let now = now();
-                    let mut bin = bin.as_slice();
+                    let mut bin: &[u8] = &*bin;
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
                     match Self::header_type(&mut bin)? {
@@ -250,7 +250,7 @@ impl GetCmd {
                         println!(
                             "label subscription stream closed: {code:?} {reason:?}",
                             code = frame.code,
-                            reason = frame.reason.as_ref(),
+                            reason = frame.reason.as_str(),
                         );
                     } else {
                         println!("label subscription stream closed");
