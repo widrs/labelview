@@ -163,7 +163,7 @@ impl GetCmd {
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
 
-        let (mut send, mut recv) = channel(common_args.buffer_size.get());
+        let (send, mut recv) = channel(common_args.buffer_size.get());
 
         tokio::spawn(async move {
             // read websocket messages from the connection until they slow down
