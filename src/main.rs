@@ -6,11 +6,12 @@ use itertools::Itertools;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    num::NonZeroUsize,
     path::PathBuf,
     rc::Rc,
     time::Duration,
 };
-use tokio::{select, time::sleep};
+use tokio::{select, sync::mpsc::channel, time::sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
@@ -37,6 +38,10 @@ struct GetCommonArgs {
     /// that it is received from the labeling service.
     #[arg(long)]
     save_to_db: Option<PathBuf>,
+    /// Maximum number of messages to buffer while processing. Increasing this can speed up
+    /// ingestion at the network level at the cost of more memory usage.
+    #[arg(long, default_value = "10000")]
+    buffer_size: NonZeroUsize,
 }
 
 #[derive(Debug, Args)]
@@ -157,25 +162,34 @@ impl GetCmd {
         let (stream, _response) = connect_async(&address).await?;
         let (_write, mut read) = stream.split();
         // TODO(widders): progress bar?
-        // read websocket messages from the connection until they slow down
-        let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
-        loop {
-            let timeout = sleep_duration.clone().map(sleep);
-            let next_frame_read = read.next();
-            let message;
-            select! {
-                Some(()) = conditional_sleep(timeout) => {
-                    println!("label subscription stream slowed and crawled; terminating");
-                    break;
-                }
-                websocket_frame = next_frame_read => {
-                    let Some(msg) = websocket_frame else {
-                        continue;
-                    };
-                    message = msg;
+
+        let (mut send, mut recv) = channel(common_args.buffer_size.get());
+
+        tokio::spawn(async move {
+            // read websocket messages from the connection until they slow down
+            let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
+            loop {
+                let timeout = sleep_duration.clone().map(sleep);
+                let next_frame_read = read.next();
+                select! {
+                    Some(()) = conditional_sleep(timeout) => {
+                        println!("label subscription stream slowed and crawled; terminating");
+                        break;
+                    }
+                    websocket_frame = next_frame_read => {
+                        let Some(msg) = websocket_frame else {
+                            continue;
+                        };
+                        let Ok(()) = send.send(msg).await else {
+                            return; // channel closed; shut down
+                        };
+                    }
                 }
             }
+        });
 
+        let begin = now();
+        while let Some(message) = recv.recv().await {
             match message.map_err(|e| err!("error reading websocket message: {e}"))? {
                 Message::Text(text) => {
                     println!("text message: {text:?}")
@@ -198,6 +212,13 @@ impl GetCmd {
                                 "label subscription stream returned an error: {error}: {message}",
                                 message = message.as_deref().unwrap_or("(no error message)"),
                             );
+                            if !bin.is_empty() {
+                                let extra_bytes = bin.len();
+                                println!(
+                                    "EXTRA DATA: received {extra_bytes} at end of event stream \
+                                    error message"
+                                );
+                            };
                             break;
                         }
                         StreamHeaderType::Type(ty) => {
@@ -239,6 +260,9 @@ impl GetCmd {
                 _ => {}
             }
         }
+        let end = now();
+        drop(recv);
+        println!("elapsed: {}", humantime::format_duration((end - begin).to_std()?));
         Ok(store.finalize()?)
     }
 }
