@@ -58,26 +58,39 @@ struct GetDirectCmd {
     labeler_service: String,
 }
 
+enum StreamHeaderType {
+    Type(String),
+    Error,
+}
+
 impl GetCmd {
     /// Reads an event stream frame header type
     ///
     /// https://atproto.com/specs/event-stream#streaming-wire-protocol-v0
-    fn header_type(bin: &mut &[u8]) -> Result<String> {
+    fn header_type(bin: &mut &[u8]) -> Result<StreamHeaderType> {
         #[derive(Deserialize)]
         struct Header {
             op: i64,
-            t: String,
-            error: Option<String>,
-            message: Option<String>,
+            t: Option<String>,
         }
-        let header: Header = ciborium::from_reader(bin)
-            .map_err(|e| err!("error decoding event stream header: {e}"))?;
-        if header.op != 1 {
-            let error_1 = header.error.as_deref().unwrap_or("(no error type)");
-            let error_2 = header.message.as_deref().unwrap_or("(no error message)");
-            bail!("received an error from event stream: {error_1}: {error_2}");
-        }
-        Ok(header.t)
+        Ok(
+            match ciborium::from_reader(bin)
+                .map_err(|e| err!("error decoding event stream header: {e}"))?
+            {
+                Header {
+                    op: 1,
+                    t: Some(t),
+                } => StreamHeaderType::Type(t),
+                Header {
+                    op: -1,
+                    t: None,
+                } => StreamHeaderType::Error,
+                malformed => bail!(
+                    "received a malformed event stream header: op {op}",
+                    op = malformed.op,
+                ),
+            },
+        )
     }
 
     async fn go(self) -> Result<()> {
@@ -153,8 +166,7 @@ impl GetCmd {
             select! {
                 Some(()) = conditional_sleep(timeout) => {
                     println!("label subscription stream slowed and crawled; terminating");
-                    store.finalize()?;
-                    return Ok(());
+                    break;
                 }
                 websocket_frame = next_frame_read => {
                     let Some(msg) = websocket_frame else {
@@ -173,30 +185,61 @@ impl GetCmd {
                     let mut bin = bin.as_slice();
                     // the schema for this endpoint is declared here:
                     // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
-                    let ty = Self::header_type(&mut bin)?;
-                    if ty == "#labels" {
-                        let labels = LabelRecord::from_subscription_record(&mut bin)?;
-                        store.process_labels(labels, &now)?;
-                    } else if ty == "#info" {
-                        let info: atrium_api::com::atproto::label::subscribe_labels::Info =
-                            ciborium::from_reader(&mut bin)
-                                .map_err(|e| err!("error parsing #info message: {e}"))?;
-                        let name = &info.name;
-                        let message = &info.message;
-                        println!("info: {name:?}: {message:?}");
-                    } else {
-                        bail!("unknown event stream message type: {ty:?}");
+                    match Self::header_type(&mut bin)? {
+                        StreamHeaderType::Error => {
+                            #[derive(Deserialize)]
+                            struct ErrorPayload {
+                                error: String,
+                                message: Option<String>,
+                            }
+                            let ErrorPayload{error, message} = ciborium::from_reader(&mut bin)
+                                .map_err(|e| err!("malformed stream error: {e}"))?;
+                            println!(
+                                "label subscription stream returned an error: {error}: {message}",
+                                message = message.as_deref().unwrap_or("(no error message)"),
+                            );
+                            break;
+                        }
+                        StreamHeaderType::Type(ty) => {
+                            if ty == "#labels" {
+                                let labels = LabelRecord::from_subscription_record(&mut bin)?;
+                                store.process_labels(labels, &now)?;
+                            } else if ty == "#info" {
+                                let info: atrium_api::com::atproto::label::subscribe_labels::Info =
+                                    ciborium::from_reader(&mut bin)
+                                        .map_err(|e| err!("error parsing #info message: {e}"))?;
+                                let name = &info.name;
+                                let message = &info.message;
+                                println!("info: {name:?}: {message:?}");
+                            } else {
+                                bail!("unknown event stream message type: {ty:?}");
+                            }
+                            if !bin.is_empty() {
+                                let extra_bytes = bin.len();
+                                println!(
+                                    "EXTRA DATA: received {extra_bytes} at end of event stream \
+                                    message"
+                                );
+                            };
+                        }
                     }
-                    if !bin.is_empty() {
-                        let extra_bytes = bin.len();
+                }
+                Message::Close(frame) => {
+                    if let Some(frame) = frame {
                         println!(
-                            "EXTRA DATA: received {extra_bytes} at end of event stream message"
+                            "label subscription stream closed: {code:?} {reason:?}",
+                            code = frame.code,
+                            reason = frame.reason.as_ref(),
                         );
-                    };
+                    } else {
+                        println!("label subscription stream closed");
+                    }
+                    break;
                 }
                 _ => {}
             }
         }
+        Ok(store.finalize()?)
     }
 }
 
