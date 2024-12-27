@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 use tokio::{select, sync::mpsc::channel, time::sleep};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async, tungstenite, tungstenite::Message};
 use url::Url;
 
 mod db;
@@ -26,12 +26,16 @@ enum GetCmd {
     Direct(GetDirectCmd),
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 struct GetCommonArgs {
     /// Timeout when the stream's updates start slowing down to assume that it is caught up, in
     /// seconds. Non-positive values wait forever
     #[arg(long, default_value = "5")]
     stream_timeout: f64,
+    /// Timeout for connecting to the websocket service, in seconds. Non-positive values wait
+    /// forever
+    #[arg(long, default_value = "10")]
+    connect_timeout: f64,
     /// Save all records read from the labeler into the specified Sqlite file.
     ///
     /// A table named "label_records" will be created and the data inserted into it, plus the time
@@ -69,35 +73,6 @@ enum StreamHeaderType {
 }
 
 impl GetCmd {
-    /// Reads an event stream frame header type
-    ///
-    /// https://atproto.com/specs/event-stream#streaming-wire-protocol-v0
-    fn header_type(bin: &mut &[u8]) -> Result<StreamHeaderType> {
-        #[derive(Deserialize)]
-        struct Header {
-            op: i64,
-            t: Option<String>,
-        }
-        Ok(
-            match ciborium::from_reader(bin)
-                .map_err(|e| err!("error decoding event stream header: {e}"))?
-            {
-                Header {
-                    op: 1,
-                    t: Some(t),
-                } => StreamHeaderType::Type(t),
-                Header {
-                    op: -1,
-                    t: None,
-                } => StreamHeaderType::Error,
-                malformed => bail!(
-                    "received a malformed event stream header: op {op}",
-                    op = malformed.op,
-                ),
-            },
-        )
-    }
-
     async fn go(self) -> Result<()> {
         let mut store = LabelStore::new()?;
 
@@ -150,121 +125,231 @@ impl GetCmd {
             }
         };
 
-        if let Some(db_path) = common_args.save_to_db {
-            store.store = Some(db::connect(&db_path)?);
+        if let Some(db_path) = &common_args.save_to_db {
+            store.store = Some(db::connect(db_path)?);
         }
 
-        let address = Url::parse(&format!(
-            "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor=0"
-        ))?;
         println!();
         println!("streaming from labeler service");
-        let (stream, _response) = connect_async(&address).await?;
-        let (_write, mut read) = stream.split();
-        // TODO(widders): progress bar?
 
-        let (send, mut recv) = channel(common_args.buffer_size.get());
-
-        tokio::spawn(async move {
-            // read websocket messages from the connection until they slow down
-            let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
-            loop {
-                let timeout = sleep_duration.clone().map(sleep);
-                let next_frame_read = read.next();
-                select! {
-                    Some(()) = conditional_sleep(timeout) => {
-                        println!("label subscription stream slowed and crawled; terminating");
-                        break;
-                    }
-                    websocket_frame = next_frame_read => {
-                        let Some(msg) = websocket_frame else {
-                            continue;
-                        };
-                        let Ok(()) = send.send(msg).await else {
-                            return; // channel closed; shut down
-                        };
-                    }
+        // We retry the entire streaming process until we fail multiple times without making any
+        // forward progress. Some labeling services seem to behave strangely and poorly,
+        // deterministically rebuffing attempts to stream label history from cursor zero by saying
+        // that the consumer is "too slow" no matter how fast it is, requiring the consumer to
+        // repeatedly resume at marching intervals to get the whole story.
+        let mut retries = 0;
+        while retries < 3 {
+            let last_cursor = store.cursor;
+            match stream_from_service(&mut store, &common_args, &labeler_domain).await? {
+                StreamResult::Ok => break,
+                StreamResult::Closed | StreamResult::WebsocketError => {}
+                StreamResult::AtprotoError { error, message } => {
+                    println!(
+                        "label subscription stream returned an error: {error}: {message}",
+                        message = message.as_deref().unwrap_or("(no error message)"),
+                    );
                 }
             }
-        });
-
-        let begin = now();
-        while let Some(message) = recv.recv().await {
-            match message.map_err(|e| err!("error reading websocket message: {e}"))? {
-                Message::Text(text) => {
-                    println!("text message: {text:?}")
-                }
-                Message::Binary(bin) => {
-                    let now = now();
-                    let mut bin: &[u8] = &*bin;
-                    // the schema for this endpoint is declared here:
-                    // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
-                    match Self::header_type(&mut bin)? {
-                        StreamHeaderType::Error => {
-                            #[derive(Deserialize)]
-                            struct ErrorPayload {
-                                error: String,
-                                message: Option<String>,
-                            }
-                            let ErrorPayload{error, message} = ciborium::from_reader(&mut bin)
-                                .map_err(|e| err!("malformed stream error: {e}"))?;
-                            println!(
-                                "label subscription stream returned an error: {error}: {message}",
-                                message = message.as_deref().unwrap_or("(no error message)"),
-                            );
-                            if !bin.is_empty() {
-                                let extra_bytes = bin.len();
-                                println!(
-                                    "EXTRA DATA: received {extra_bytes} at end of event stream \
-                                    error message"
-                                );
-                            };
-                            break;
-                        }
-                        StreamHeaderType::Type(ty) => {
-                            if ty == "#labels" {
-                                let labels = LabelRecord::from_subscription_record(&mut bin)?;
-                                store.process_labels(labels, &now)?;
-                            } else if ty == "#info" {
-                                let info: atrium_api::com::atproto::label::subscribe_labels::Info =
-                                    ciborium::from_reader(&mut bin)
-                                        .map_err(|e| err!("error parsing #info message: {e}"))?;
-                                let name = &info.name;
-                                let message = &info.message;
-                                println!("info: {name:?}: {message:?}");
-                            } else {
-                                bail!("unknown event stream message type: {ty:?}");
-                            }
-                            if !bin.is_empty() {
-                                let extra_bytes = bin.len();
-                                println!(
-                                    "EXTRA DATA: received {extra_bytes} at end of event stream \
-                                    message"
-                                );
-                            };
-                        }
-                    }
-                }
-                Message::Close(frame) => {
-                    if let Some(frame) = frame {
-                        println!(
-                            "label subscription stream closed: {code:?} {reason:?}",
-                            code = frame.code,
-                            reason = frame.reason.as_str(),
-                        );
-                    } else {
-                        println!("label subscription stream closed");
-                    }
-                    break;
-                }
-                _ => {}
-            }
+            retries = if store.cursor > last_cursor {
+                0
+            } else {
+                retries + 1
+            };
         }
-        let end = now();
-        drop(recv);
-        println!("elapsed: {}", humantime::format_duration((end - begin).to_std()?));
+
         Ok(store.finalize()?)
     }
+}
+
+/// Reads an event stream frame header type
+///
+/// https://atproto.com/specs/event-stream#streaming-wire-protocol-v0
+fn header_type(bin: &mut &[u8]) -> Result<StreamHeaderType> {
+    #[derive(Deserialize)]
+    struct Header {
+        op: i64,
+        t: Option<String>,
+    }
+    Ok(
+        match ciborium::from_reader(bin)
+            .map_err(|e| err!("error decoding event stream header: {e}"))?
+        {
+            Header { op: 1, t: Some(t) } => StreamHeaderType::Type(t),
+            Header { op: -1, t: None } => StreamHeaderType::Error,
+            malformed => bail!(
+                "received a malformed event stream header: op {op}",
+                op = malformed.op,
+            ),
+        },
+    )
+}
+
+enum StreamResult {
+    Ok,
+    Closed,
+    WebsocketError,
+    AtprotoError {
+        error: String,
+        message: Option<String>,
+    },
+}
+
+async fn stream_from_service(
+    store: &mut LabelStore,
+    common_args: &GetCommonArgs,
+    labeler_domain: &str,
+) -> Result<StreamResult> {
+    let stream_result;
+    let common_args = common_args.clone();
+    println!("streaming from cursor {cursor}", cursor = store.cursor);
+    let address = Url::parse(&format!(
+        "wss://{labeler_domain}/xrpc/com.atproto.label.subscribeLabels?cursor={cursor}",
+        cursor = store.cursor,
+    ))?;
+    // Connect the websocket with timeout
+    let stream;
+    {
+        let connect_timeout = Duration::try_from_secs_f64(common_args.connect_timeout)
+            .ok()
+            .map(sleep);
+        select! {
+            Some(()) = conditional_sleep(connect_timeout) => {
+                println!("connecting to label service timed out");
+                return Ok(StreamResult::WebsocketError);
+            }
+            connected = connect_async(&address) => {
+                let Ok((connected_stream, _response)) = connected else {
+                    println!(
+                        "error connecting to label service: {err}",
+                        err = connected.err().unwrap()
+                    );
+                    return Ok(StreamResult::WebsocketError);
+                };
+                stream = connected_stream;
+            }
+        }
+    }
+
+    let (_write, mut read) = stream.split();
+    let (send, mut recv) = channel(common_args.buffer_size.get());
+
+    tokio::spawn(async move {
+        // read websocket messages from the connection until they slow down
+        let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
+        loop {
+            let timeout = sleep_duration.clone().map(sleep);
+            let next_frame_read = read.next();
+            select! {
+                Some(()) = conditional_sleep(timeout) => {
+                    println!("label subscription stream slowed and crawled; terminating");
+                    break;
+                }
+                websocket_frame = next_frame_read => {
+                    let Some(msg) = websocket_frame else {
+                        println!("label subscription stream was closed");
+                        let _ = send.send(Err(tungstenite::Error::ConnectionClosed)).await;
+                        return;
+                    };
+                    let Ok(()) = send.send(msg).await else {
+                        return; // channel closed; shut down
+                    };
+                }
+            }
+        }
+    });
+
+    let begin = now();
+    loop {
+        let Some(message) = recv.recv().await else {
+            stream_result = Ok(StreamResult::Ok);
+            break;
+        };
+        match message.map_err(|e| err!("error reading websocket message: {e}")) {
+            Ok(Message::Text(text)) => {
+                println!("text message: {text:?}")
+            }
+            Ok(Message::Binary(bin)) => {
+                let now = now();
+                let mut bin: &[u8] = &*bin;
+                // the schema for this endpoint is declared here:
+                // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
+                match header_type(&mut bin)? {
+                    StreamHeaderType::Error => {
+                        #[derive(Deserialize)]
+                        struct ErrorPayload {
+                            error: String,
+                            message: Option<String>,
+                        }
+                        let ErrorPayload { error, message } = ciborium::from_reader(&mut bin)
+                            .map_err(|e| err!("malformed stream error: {e}"))?;
+                        if !bin.is_empty() {
+                            let extra_bytes = bin.len();
+                            println!(
+                                "EXTRA DATA: received {extra_bytes} at end of event stream \
+                                error message"
+                            );
+                        };
+                        stream_result = Ok(StreamResult::AtprotoError { error, message });
+                        break;
+                    }
+                    StreamHeaderType::Type(ty) => {
+                        if ty == "#labels" {
+                            let (seq, labels) = LabelRecord::from_subscription_record(&mut bin)?;
+                            if seq <= store.cursor {
+                                bail!(
+                                    "seq did not increase (was {was}, is now {seq})",
+                                    was = store.cursor
+                                );
+                            }
+                            store.process_labels(labels, &now)?;
+                            store.cursor = seq;
+                        } else if ty == "#info" {
+                            let info: atrium_api::com::atproto::label::subscribe_labels::Info =
+                                ciborium::from_reader(&mut bin)
+                                    .map_err(|e| err!("error parsing #info message: {e}"))?;
+                            let name = &info.name;
+                            let message = &info.message;
+                            println!("info: {name:?}: {message:?}");
+                        } else {
+                            bail!("unknown event stream message type: {ty:?}");
+                        }
+                        if !bin.is_empty() {
+                            let extra_bytes = bin.len();
+                            println!(
+                                "EXTRA DATA: received {extra_bytes} at end of event stream \
+                                message"
+                            );
+                        };
+                    }
+                }
+            }
+            Ok(Message::Close(frame)) => {
+                if let Some(frame) = frame {
+                    println!(
+                        "label subscription stream closed: {code:?} {reason:?}",
+                        code = frame.code,
+                        reason = frame.reason.as_str(),
+                    );
+                } else {
+                    println!("label subscription stream closed");
+                }
+                stream_result = Ok(StreamResult::Closed);
+                break;
+            }
+            Err(..) => {
+                stream_result = Ok(StreamResult::WebsocketError);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let end = now();
+    drop(recv);
+    println!(
+        "elapsed: {}",
+        humantime::format_duration((end - begin).to_std()?)
+    );
+    stream_result
 }
 
 /// waits for the timer only if a one is provided
@@ -286,6 +371,8 @@ struct LabelStore {
     effective: HashMap<LabelKey, LabelRecord>,
     /// greatest create timestamp of a label we've seen this trip
     latest_create_timestamp: Option<Rc<str>>,
+    /// cursor (largest known seq)
+    cursor: i64,
 }
 
 impl LabelStore {
@@ -296,6 +383,7 @@ impl LabelStore {
             effective: HashMap::new(),
             labeler_dids: HashSet::new(),
             latest_create_timestamp: None,
+            cursor: 0,
         })
     }
 
@@ -345,6 +433,10 @@ impl LabelStore {
         println!(
             "received a total of {total} label record(s)",
             total = self.total_labels
+        );
+        println!(
+            "label records have sequence numbers up to {seq}",
+            seq = self.cursor
         );
         println!();
 

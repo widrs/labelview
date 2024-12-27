@@ -83,8 +83,10 @@ impl Borrow<LabelKey> for LabelRecord {
 }
 
 impl LabelRecord {
+    /// Returns the seq and labels from a subscription stream message.
+    ///
     /// https://atproto.com/specs/label#schema-and-data-model
-    pub fn from_subscription_record(bin: &mut &[u8]) -> Result<Vec<Self>> {
+    pub fn from_subscription_record(bin: &mut &[u8]) -> Result<(i64, Vec<Self>)> {
         let labels: atrium_api::com::atproto::label::subscribe_labels::Labels =
             ciborium::from_reader(bin)
                 .map_err(|e| err!("error decoding label record event stream body: {e}"))?;
@@ -119,7 +121,8 @@ impl LabelRecord {
                     sig: label.sig,
                 })
             })
-            .collect()
+            .collect::<Result<_>>()
+            .map(|labels| (seq, labels))
     }
 
     pub fn is_expired(&self, now: &DateTime) -> bool {
