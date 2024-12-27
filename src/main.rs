@@ -263,90 +263,85 @@ async fn stream_from_service(
     });
 
     let begin = now();
-    loop {
-        let Some(message) = recv.recv().await else {
-            stream_result = Ok(StreamResult::Ok);
-            break;
-        };
-        match message.map_err(|e| err!("error reading websocket message: {e}")) {
-            Ok(Message::Text(text)) => {
-                println!("text message: {text:?}")
-            }
-            Ok(Message::Binary(bin)) => {
-                let now = now();
-                let mut bin: &[u8] = &*bin;
-                // the schema for this endpoint is declared here:
-                // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
-                match header_type(&mut bin)? {
-                    StreamHeaderType::Error => {
-                        #[derive(Deserialize)]
-                        struct ErrorPayload {
-                            error: String,
-                            message: Option<String>,
-                        }
-                        let ErrorPayload { error, message } = ciborium::from_reader(&mut bin)
-                            .map_err(|e| err!("malformed stream error: {e}"))?;
-                        if !bin.is_empty() {
-                            let extra_bytes = bin.len();
-                            println!(
-                                "EXTRA DATA: received {extra_bytes} at end of event stream \
-                                error message"
-                            );
-                        };
-                        stream_result = Ok(StreamResult::AtprotoError { error, message });
-                        break;
+    let stream_result = 'stream_result: {
+        while let Some(message) = recv.recv().await {
+            let bin = match message.map_err(|e| err!("error reading websocket message: {e}")) {
+                Ok(Message::Text(text)) => {
+                    println!("text websocket message: {text:?}");
+                    continue;
+                }
+                Ok(Message::Binary(bin)) => bin,
+                Ok(Message::Close(frame)) => {
+                    if let Some(frame) = frame {
+                        println!(
+                            "label subscription stream closed: {code:?} {reason:?}",
+                            code = frame.code,
+                            reason = frame.reason.as_str(),
+                        );
+                    } else {
+                        println!("label subscription stream closed");
                     }
-                    StreamHeaderType::Type(ty) => {
-                        if ty == "#labels" {
-                            let (seq, labels) = LabelRecord::from_subscription_record(&mut bin)?;
-                            if seq <= store.cursor {
-                                bail!(
-                                    "seq did not increase (was {was}, is now {seq})",
-                                    was = store.cursor
-                                );
-                            }
-                            store.process_labels(labels, &now)?;
-                            store.cursor = seq;
-                        } else if ty == "#info" {
-                            let info: atrium_api::com::atproto::label::subscribe_labels::Info =
-                                ciborium::from_reader(&mut bin)
-                                    .map_err(|e| err!("error parsing #info message: {e}"))?;
-                            let name = &info.name;
-                            let message = &info.message;
-                            println!("info: {name:?}: {message:?}");
-                        } else {
-                            bail!("unknown event stream message type: {ty:?}");
-                        }
-                        if !bin.is_empty() {
-                            let extra_bytes = bin.len();
-                            println!(
-                                "EXTRA DATA: received {extra_bytes} at end of event stream \
-                                message"
-                            );
-                        };
+                    break 'stream_result Ok(StreamResult::Closed);
+                }
+                Err(..) => {
+                    break 'stream_result Ok(StreamResult::WebsocketError);
+                }
+                _ => continue,
+            };
+            let now = now();
+            let mut bin: &[u8] = &*bin;
+            // the schema for this endpoint is declared here:
+            // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
+            match header_type(&mut bin)? {
+                StreamHeaderType::Error => {
+                    #[derive(Deserialize)]
+                    struct ErrorPayload {
+                        error: String,
+                        message: Option<String>,
                     }
+                    let ErrorPayload { error, message } = ciborium::from_reader(&mut bin)
+                        .map_err(|e| err!("malformed stream error: {e}"))?;
+                    if !bin.is_empty() {
+                        let extra_bytes = bin.len();
+                        println!(
+                            "EXTRA DATA: received {extra_bytes} at end of event stream error \
+                            message"
+                        );
+                    };
+                    break 'stream_result Ok(StreamResult::AtprotoError { error, message });
+                }
+                StreamHeaderType::Type(ty) => {
+                    if ty == "#labels" {
+                        let (seq, labels) = LabelRecord::from_subscription_record(&mut bin)?;
+                        if seq <= store.cursor {
+                            bail!(
+                                "seq did not increase (was {was}, is now {seq})",
+                                was = store.cursor
+                            );
+                        }
+                        store.process_labels(labels, &now)?;
+                        store.cursor = seq;
+                    } else if ty == "#info" {
+                        let info: atrium_api::com::atproto::label::subscribe_labels::Info =
+                            ciborium::from_reader(&mut bin)
+                                .map_err(|e| err!("error parsing #info message: {e}"))?;
+                        let name = &info.name;
+                        let message = &info.message;
+                        println!("info: {name:?}: {message:?}");
+                    } else {
+                        bail!("unknown event stream message type: {ty:?}");
+                    }
+                    if !bin.is_empty() {
+                        let extra_bytes = bin.len();
+                        println!(
+                            "EXTRA DATA: received {extra_bytes} at end of event stream message"
+                        );
+                    };
                 }
             }
-            Ok(Message::Close(frame)) => {
-                if let Some(frame) = frame {
-                    println!(
-                        "label subscription stream closed: {code:?} {reason:?}",
-                        code = frame.code,
-                        reason = frame.reason.as_str(),
-                    );
-                } else {
-                    println!("label subscription stream closed");
-                }
-                stream_result = Ok(StreamResult::Closed);
-                break;
-            }
-            Err(..) => {
-                stream_result = Ok(StreamResult::WebsocketError);
-                break;
-            }
-            _ => {}
         }
-    }
+        Ok(StreamResult::Ok)
+    };
     let end = now();
     drop(recv);
     println!(
