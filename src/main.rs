@@ -137,8 +137,9 @@ impl GetCmd {
         // deterministically rebuffing attempts to stream label history from cursor zero by saying
         // that the consumer is "too slow" no matter how fast it is, requiring the consumer to
         // repeatedly resume at marching intervals to get the whole story.
+        const MAX_RETRIES: usize = 3;
         let mut retries = 0;
-        while retries < 3 {
+        while retries < MAX_RETRIES {
             let last_cursor = store.cursor;
             match stream_from_service(&mut store, &common_args, &labeler_domain).await? {
                 StreamResult::Ok => break,
@@ -155,6 +156,9 @@ impl GetCmd {
             } else {
                 retries + 1
             };
+        }
+        if retries == MAX_RETRIES {
+            println!("reached maximum retries without making progress; giving up");
         }
 
         Ok(store.finalize()?)
