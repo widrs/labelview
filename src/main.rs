@@ -203,7 +203,6 @@ async fn stream_from_service(
     common_args: &GetCommonArgs,
     labeler_domain: &str,
 ) -> Result<StreamResult> {
-    let stream_result;
     let common_args = common_args.clone();
     println!("streaming from cursor {cursor}", cursor = store.cursor);
     let address = Url::parse(&format!(
