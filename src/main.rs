@@ -101,10 +101,8 @@ impl GetCmd {
                 println!("handle: {handle_text}");
                 println!("did:    {did}");
                 println!();
-                let pds_text = pds.as_deref().unwrap_or("(no pds endpoint defined)");
-                let labeler_text = labeler
-                    .as_deref()
-                    .unwrap_or("(no labeler endpoint defined)");
+                let pds_text = pds.unwrap_or("(no pds endpoint defined)");
+                let labeler_text = labeler.unwrap_or("(no labeler endpoint defined)");
                 println!("pds:     {pds_text}");
                 println!("labeler: {labeler_text}");
 
@@ -112,7 +110,7 @@ impl GetCmd {
                     bail!("that entity doesn't seem to be a labeler.");
                 };
 
-                let labeler_url = Url::parse(&labeler)
+                let labeler_url = Url::parse(labeler)
                     .map_err(|e| err!("could not parse labeler endpoint as url: {e}"))?;
                 let Some(labeler_domain) = labeler_url.domain() else {
                     bail!("labeler endpoint url does not seem to specify a domain");
@@ -161,7 +159,7 @@ impl GetCmd {
             println!("reached maximum retries without making progress; giving up");
         }
 
-        Ok(store.finalize()?)
+        store.finalize()
     }
 }
 
@@ -240,7 +238,7 @@ async fn stream_from_service(
         // read websocket messages from the connection until they slow down
         let sleep_duration = Duration::try_from_secs_f64(common_args.stream_timeout).ok();
         loop {
-            let timeout = sleep_duration.clone().map(sleep);
+            let timeout = sleep_duration.map(sleep);
             let next_frame_read = read.next();
             select! {
                 Some(()) = conditional_sleep(timeout) => {
@@ -288,7 +286,7 @@ async fn stream_from_service(
                 _ => continue,
             };
             let now = now();
-            let mut bin: &[u8] = &*bin;
+            let mut bin: &[u8] = &bin;
             // the schema for this endpoint is declared here:
             // https://github.com/bluesky-social/atproto/blob/main/lexicons/com/atproto/label/subscribeLabels.json
             match header_type(&mut bin)? {
@@ -353,7 +351,10 @@ async fn stream_from_service(
 /// waits for the timer only if a one is provided
 async fn conditional_sleep(t: Option<tokio::time::Sleep>) -> Option<()> {
     match t {
-        Some(timer) => Some(timer.await),
+        Some(timer) => {
+            timer.await;
+            Some(())
+        }
         None => None,
     }
 }

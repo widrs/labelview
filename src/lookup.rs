@@ -30,8 +30,8 @@ async fn find_did_in_dns(dns_domain: &str) -> Option<String> {
             continue;
         };
         let mut full_text = Vec::new();
-        full_text.extend_from_slice(&after_prefix);
-        full_text.extend(rest.into_iter().flatten());
+        full_text.extend_from_slice(after_prefix);
+        full_text.extend(rest.iter().flatten());
         return String::from_utf8(full_text).ok();
     }
     None
