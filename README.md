@@ -193,6 +193,6 @@ there are even more problems than that:
 
 80% of the real bad parts of this specific corner of the system would be
 mitigated if they would just fix the problem where labelers can always apply
-undeclared global moderation tags and block anyone and all accounts they feel
-like. it would not solve the rot at the heart of the place, but it would help a
-lot.
+undeclared global moderation tags and block any accounts and content they feel
+like for all of their subscribers at any time. it would not solve the rot at the
+heart of the place, but it would help a lot.
