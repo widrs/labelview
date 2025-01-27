@@ -167,8 +167,9 @@ where
   may never actually go back and reingest these old retconned labels.
 * because the only real way to enumerate all labels is to ask the labeling
   entity, this means there is no way to prove that labels *aren't* applied.
-  * the only real way to tell whether your favorite bsky frontend that applies
-    labels that you don't own and operate is to see those labels get applied.
+  * the only real way to tell whether labelers that you don't own and operate
+    effectively apply any labels or not is to go to your favorite bsky frontend
+    that shows labels and see whether those labels get applied. this is useless!
 
 while working on the logic to persist previously seen labels and audit any seen
 changes from a labeler over multiple passes for suspicious changes (which is,
