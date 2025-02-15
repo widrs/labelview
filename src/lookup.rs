@@ -54,6 +54,7 @@ async fn find_did_in_well_known(https_domain: &str) -> Option<String> {
 }
 
 pub async fn did_doc(plc_directory: &str, did: &str) -> Result<DidDocument> {
+    let did = did.trim_ascii();
     let doc: DidDocument = match did.strip_prefix("did:").and_then(|s| s.split_once(':')) {
         Some(("plc", _)) => {
             println!("reading did document from plc directory...");
