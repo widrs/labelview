@@ -49,9 +49,14 @@ async fn find_did_in_well_known(https_domain: &str) -> Option<String> {
     let content = response.bytes().await.ok()?;
     match std::str::from_utf8(&content) {
         Ok(content) => {
-            let content = content.trim_ascii();
-            if content.starts_with("did:") {
-                Some(content.to_owned())
+            // split first line and trim whitespace
+            let well_known_did = content
+                .split_once('\n')
+                .map(|(first, _)| first)
+                .unwrap_or(content)
+                .trim_ascii();
+            if well_known_did.starts_with("did:") {
+                Some(well_known_did.to_owned())
             } else {
                 None
             }
