@@ -19,8 +19,9 @@ pub async fn did(handle_or_did: &str) -> Result<String> {
 
 async fn find_did_in_dns(dns_domain: &str) -> Option<String> {
     println!("looking up did via dns TXT...");
-    let dns_resolver =
-        hickory_resolver::TokioAsyncResolver::tokio(Default::default(), Default::default());
+    let dns_resolver = hickory_resolver::TokioResolver::builder_tokio()
+        .unwrap()
+        .build();
     let lookup = dns_resolver.txt_lookup(dns_domain).await.ok()?;
     for record in lookup.iter() {
         let Some((first, rest)) = record.txt_data().split_first() else {
