@@ -6,19 +6,19 @@ rust-version = "1.83"
 resolver = "2"
 
 [dependencies]
-atrium-api = { version = "0.24.10", features = ["namespace-appbsky"] }
-chrono = "0.4.39"
+atrium-api = { version = "0.25.4", features = ["namespace-appbsky"] }
+chrono = "0.4.41"
 ciborium = "0.2.2"
-clap = { version = "4.5.29", features = ["derive"] }
+clap = { version = "4.5.40", features = ["derive"] }
 eyre = "0.6.12"
 futures-util = "0.3.31"
-hickory-resolver = "0.24.3"
-humantime = "2.1.0"
+hickory-resolver = "0.25.2"
+humantime = "2.2.0"
 itertools = "0.14.0"
-reqwest = { version = "0.12.12", default-features = false, features = ["brotli", "http2", "rustls-tls-native-roots", "zstd"] }
-rusqlite = { version = "0.33.0", features = ["bundled", "chrono", "modern_sqlite", "rusqlite-macros"] }
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = { version = "1.0.138", features = ["float_roundtrip"] }
-tokio = { version = "1.43.0", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "sync"] }
-tokio-tungstenite = { version = "0.26.1", features = ["connect", "rustls-tls-native-roots", "url"] }
+reqwest = { version = "0.12.19", default-features = false, features = ["brotli", "http2", "rustls-tls-native-roots", "zstd"] }
+rusqlite = { version = "0.36.0", features = ["bundled", "chrono", "modern_sqlite", "rusqlite-macros"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", features = ["float_roundtrip"] }
+tokio = { version = "1.45.1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "sync"] }
+tokio-tungstenite = { version = "0.26.2", features = ["connect", "rustls-tls-native-roots", "url"] }
 url = "2.5.4"
